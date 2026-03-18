@@ -1,0 +1,152 @@
+name: AI PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR Number"
+        required: true
+        type: number
+      mode:
+        description: "Review mode"
+        required: false
+        default: "auto"
+        type: choice
+        options:
+          - auto
+          - cpu
+          - gpu
+          - skip
+
+env:
+  PYTHON_VERSION: "3.11"
+  SORGE_VERSION: "0.1.0"
+
+jobs:
+  review:
+    name: AI Code Review
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: "pip"
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Get PR information
+        id: pr_info
+        run: |
+          echo "PR_NUMBER=${{ github.event.pull_request.number || inputs.pr_number }}" >> $GITHUB_OUTPUT
+          echo "REPO=${{ github.repository }}" >> $GITHUB_OUTPUT
+          echo "BASE_REF=${{ github.base_ref }}" >> $GITHUB_OUTPUT
+          echo "HEAD_SHA=${{ github.sha }}" >> $GITHUB_OUTPUT
+      
+      - name: Extract diff
+        id: diff
+        run: |
+          git fetch origin ${{ steps.pr_info.outputs.BASE_REF }}
+          git diff origin/${{ steps.pr_info.outputs.BASE_REF }} ${{ steps.pr_info.outputs.HEAD_SHA }} > pr.diff
+          
+          DIFF_SIZE=$(wc -l < pr.diff)
+          echo "SIZE=$DIFF_SIZE" >> $GITHUB_OUTPUT
+          echo "SIZE_MB=$(du -h pr.diff | cut -f1)" >> $GITHUB_OUTPUT
+          
+          echo "diff_size=$DIFF_SIZE" >> $GITHUB_OUTPUT
+      
+      - name: Check for config file
+        id: config
+        run: |
+          if [ -f "sorge.toml" ]; then
+            echo "EXISTS=true" >> $GITHUB_OUTPUT
+          else
+            echo "EXISTS=false" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Download model (CPU mode)
+        if: steps.config.outputs.EXISTS == 'false' || contains(fromJSON('["auto", "cpu"]'), inputs.mode || 'auto')
+        run: |
+          mkdir -p ~/.cache/sorge/models
+          
+          MODEL_PATH="${MODEL_PATH:-~/.cache/sorge/models/codellama-7b.Q4_K_M.gguf}"
+          
+          if [ ! -f "$MODEL_PATH" ]; then
+            echo "Downloading CodeLlama 7B Q4 model..."
+            python -c "
+import urllib.request
+import os
+
+url = 'https://huggingface.co/TheBloke/CodeLlama-7B-Instruct-GGUF/resolve/main/codellama-7b-instruct.Q4_K_M.gguf'
+path = os.path.expanduser('~/.cache/sorge/models/codellama-7b.Q4_K_M.gguf')
+os.makedirs(os.path.dirname(path), exist_ok=True)
+
+if not os.path.exists(path):
+    print(f'Downloading to {path}...')
+    urllib.request.urlretrieve(url, path)
+    print('Download complete')
+else:
+    print('Model already exists')
+"
+          fi
+      
+      - name: Run AI review
+        id: review
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SORGE_MODE: ${{ inputs.mode || 'auto' }}
+        run: |
+          python -m bot.main \
+            --diff pr.diff \
+            --pr-number ${{ steps.pr_info.outputs.PR_NUMBER }} \
+            --repo ${{ steps.pr_info.outputs.REPO }} \
+            --token "$GITHUB_TOKEN" \
+            --mode "${SORGE_MODE:-auto}" \
+            --verbose || echo "Review completed with warnings"
+      
+      - name: Post skip comment if skipped
+        if: steps.review.outputs.action == 'skip'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          curl -s -X POST \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/repos/${{ steps.pr_info.outputs.REPO }}/issues/${{ steps.pr_info.outputs.PR_NUMBER }}/comments \
+            -d '{
+              "body": "## AI Code Review - Skipped\n\nThis PR was automatically analyzed and determined to not require AI review.\n\n*This is an automated comment by [deepiri-sorge](https://github.com/deepiri/deepiri-sorge).*"
+            }'
+      
+      - name: Upload review results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: review-results
+          path: |
+            pr.diff
+            review-output.json
+          retention-days: 7
+      
+      - name: Post summary
+        if: always()
+        run: |
+          echo "## Review Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| PR Number | #${{ steps.pr_info.outputs.PR_NUMBER }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Diff Size | ${{ steps.diff.outputs.SIZE }} lines |" >> $GITHUB_STEP_SUMMARY
+          echo "| Config Found | ${{ steps.config.outputs.EXISTS }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Review Mode | ${SORGE_MODE:-auto} |" >> $GITHUB_STEP_SUMMARY

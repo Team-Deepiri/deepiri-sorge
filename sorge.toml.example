@@ -1,0 +1,32 @@
+# Example sorge.toml configuration
+
+[sorge]
+enabled = true
+
+[filters]
+min_lines = 20
+skip_docs = true
+skip_deps = true
+skip_tests = false
+max_cpu_lines = 500
+
+[review]
+style = "concise"
+include_security = true
+include_performance = true
+include_style = true
+
+[gpu]
+enabled = false
+threshold_lines = 1000
+endpoint = ""
+timeout = 60
+
+[model]
+name = "codellama-7b-q4"
+context_size = 4096
+threads = 4
+
+[cache]
+enabled = true
+ttl_hours = 24

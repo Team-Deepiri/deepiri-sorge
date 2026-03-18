@@ -1,0 +1,78 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deepiri-sorge"
+version = "0.1.0"
+description = "Distributed, event-driven AI PR review bot - runs on GitHub Actions"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+authors = [
+    {name = "Deepiri", email = "dev@deepiri.dev"}
+]
+keywords = ["ai", "code-review", "github-actions", "llm", "github-bot"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "requests>=2.31.0",
+    "PyYAML>=6.0.1",
+    "toml>=0.10.2",
+    "loguru>=0.7.2",
+    "ghapi>=1.0.4",
+    "pydantic>=2.5.0",
+    "numpy>=1.24.0",
+    "scikit-learn>=1.3.0",
+]
+
+[project.optional-dependencies]
+llama = ["llama-cpp-python>=0.2.0"]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.1.0",
+    "ruff>=0.1.0",
+    "mypy>=1.7.0",
+]
+all = [
+    "llama-cpp-python>=0.2.0",
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.1.0",
+    "ruff>=0.1.0",
+    "mypy>=1.7.0",
+]
+
+[project.scripts]
+sorge = "bot.main:main"
+sorge-review = "bot.main:review"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["bot*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "DTZ", "T10", "ISC"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

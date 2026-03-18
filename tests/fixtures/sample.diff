@@ -1,0 +1,43 @@
+diff --git a/src/main.py b/src/main.py
+index abc1234..def5678 100644
+--- a/src/main.py
++++ b/src/main.py
+@@ -1,15 +1,25 @@
+ import os
+ import sys
+-from typing import List
++from typing import List, Optional, Dict
+
+ class Config:
+-    def __init__(self):
+-        self.debug = os.getenv("DEBUG", "false").lower() == "true"
++    def __init__(self, debug: bool = False):
++        self.debug = debug
++        self.api_key = os.getenv("API_KEY", "")
++        self.timeout = int(os.getenv("TIMEOUT", "30"))
+ 
+-    def load(self):
+-        pass
++    def validate(self) -> bool:
++        if not self.api_key:
++            return False
++        return len(self.api_key) >= 32
++
++    def to_dict(self) -> Dict[str, any]:
++        return {
++            "debug": self.debug,
++            "timeout": self.timeout,
++        }
+
+ def main():
+-    config = Config()
+-    config.load()
++    config = Config(debug=True)
++    if not config.validate():
++        print("Error: Invalid configuration")
++        sys.exit(1)
+     print("Application started")
+
+ def helper():
+-    return None
++    return {"status": "ok", "version": "1.0.0"}

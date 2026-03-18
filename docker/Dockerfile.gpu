@@ -1,0 +1,32 @@
+FROM nvidia/cuda:12.1.0-runtime-ubuntu22.04
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.11 \
+    python3.11-dev \
+    python3-pip \
+    build-essential \
+    git \
+    curl \
+    wget \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/bin/python3.11 /usr/bin/python
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip3 install --no-cache-dir -r requirements.txt
+
+COPY bot/ ./bot/
+COPY pyproject.toml .
+
+RUN pip3 install --no-cache-dir -e .
+
+ENV PATH="/app:${PATH}"
+ENV CUDA_VISIBLE_DEVICES=0
+
+ENTRYPOINT ["python", "-m", "bot.main"]
+CMD ["--help"]

@@ -1,0 +1,9 @@
+## AI Code Review - Skipped
+
+This PR was automatically analyzed and determined to not require AI review:
+
+**Reason:** {reason}
+
+---
+
+*This is an automated comment. Configure review settings in `sorge.toml`.*

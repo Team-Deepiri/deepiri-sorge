@@ -1,0 +1,16 @@
+diff --git a/package-lock.json b/package-lock.json
+index abc1234..def5678 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -1000,7 +1000,8 @@
+       }
+     },
+     "node_modules/lodash": {
+-      "version": "4.17.20",
++      "version": "4.17.21",
+       "resolved": "https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz",
+-      "integrity": "sha512-v2kDEe57lecTulaDIuNTPy3Ry4lL4CWGxztyDHMAI8XA5M9X8PGQ1
++      "integrity": "sha512-v2kDEe57lecTulaDIuNTPy3Ry4lL4CWGxztyDHMAI8XA5M9X8PGQ1"
+     }
+   }
+ }
