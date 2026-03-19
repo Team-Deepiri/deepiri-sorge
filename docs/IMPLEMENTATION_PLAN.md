@@ -134,6 +134,7 @@ GitHub PR Event → GitHub Action → Decision Engine → [CPU Review | Skip | G
 - [ ] Integration with code quality tools
 - [ ] Support for GitHub Enterprise
 
+WE NEED TO CONFIGURE IT TO GITHUB AND ANY EXTERNAL PLATFORM THAT WE USE OR EXTERNAL HOSTING OR MODEL
 ---
 
 ## Configuration
