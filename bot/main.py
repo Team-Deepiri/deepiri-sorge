@@ -4,16 +4,15 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Optional
 
 from loguru import logger
 
-from bot.config import Config
-from bot.decision_engine import DecisionEngine, ReviewDecision, Action
-from bot.diff_parser import DiffParser
-from bot.cpu_reviewer import CPUReviewer
-from bot.gpu_runner import GPURunner
 from bot.comment_poster import CommentPoster
+from bot.config import Config
+from bot.cpu_reviewer import CPUReviewer
+from bot.decision_engine import Action, DecisionEngine
+from bot.diff_parser import DiffParser
+from bot.gpu_runner import GPURunner
 
 
 def parse_args() -> argparse.Namespace:
@@ -65,11 +64,11 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_diff(diff_arg: Optional[str]) -> str:
+def load_diff(diff_arg: str | None) -> str:
     if not diff_arg:
         logger.error("No diff provided")
         sys.exit(1)
-    
+
     path = Path(diff_arg)
     if path.exists() and path.is_file():
         return path.read_text()
@@ -78,21 +77,21 @@ def load_diff(diff_arg: Optional[str]) -> str:
 
 def main() -> None:
     args = parse_args()
-    
+
     logger.remove()
     if args.verbose:
         logger.add(sys.stderr, level="DEBUG")
     else:
         logger.add(sys.stderr, level="INFO")
-    
+
     logger.info(f"deepiri-sorge v{__import__('bot').__version__}")
-    
+
     config = Config.from_file(args.config) if Path(args.config).exists() else Config()
     logger.debug(f"Config: {config}")
-    
+
     diff_content = load_diff(args.diff)
     logger.info(f"Loaded diff ({len(diff_content)} bytes)")
-    
+
     diff_parser = DiffParser()
     parsed_diff = diff_parser.parse(diff_content)
     logger.info(
@@ -100,32 +99,32 @@ def main() -> None:
         f"{parsed_diff.lines_added} additions, "
         f"{parsed_diff.lines_deleted} deletions"
     )
-    
+
     decision_engine = DecisionEngine(config)
     decision = decision_engine.decide(parsed_diff)
-    
+
     logger.info(f"Decision: {decision.action.value} - {decision.reason}")
-    
+
     if decision.action == Action.SKIP:
         logger.info("Skipping review")
         print(json.dumps({"action": "skip", "reason": decision.reason}))
         return
-    
+
     review_result = None
-    
+
     if decision.action == Action.CPU_REVIEW or args.mode == "cpu":
         logger.info("Running CPU review")
         reviewer = CPUReviewer(config)
         review_result = reviewer.review(parsed_diff)
-    
+
     elif decision.action == Action.GPU_REVIEW or args.mode == "gpu":
         logger.info("Running GPU review")
         gpu_runner = GPURunner(config)
         review_result = gpu_runner.review(parsed_diff)
-    
+
     if review_result:
         logger.info(f"Review complete: {len(review_result.issues)} issues found")
-        
+
         if args.pr_number and args.repo and not args.dry_run:
             poster = CommentPoster(args.token or "")
             poster.post_review(
@@ -133,7 +132,7 @@ def main() -> None:
                 pr_number=args.pr_number,
                 review=review_result,
             )
-        
+
         print(json.dumps(review_result.to_dict(), indent=2))
     else:
         logger.warning("No review result generated")

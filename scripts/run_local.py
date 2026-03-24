@@ -2,7 +2,6 @@
 """Run deepiri-sorge locally for testing"""
 
 import argparse
-import json
 import sys
 from pathlib import Path
 
@@ -40,21 +39,21 @@ def main():
         action="store_true",
         help="Verbose output",
     )
-    
+
     args = parser.parse_args()
-    
+
     sys.argv = [
         "sorge",
         "--diff", args.diff,
         "--config", args.config,
     ]
-    
+
     if args.dry_run:
         sys.argv.append("--dry-run")
-    
+
     if args.verbose:
         sys.argv.append("--verbose")
-    
+
     bot_main()
 
 

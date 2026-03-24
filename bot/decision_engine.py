@@ -3,7 +3,6 @@
 import re
 from dataclasses import dataclass
 from enum import Enum
-from typing import List, Optional
 
 from loguru import logger
 
@@ -22,11 +21,11 @@ class ReviewDecision:
     action: Action
     reason: str
     confidence: float = 1.0
-    skip_category: Optional[str] = None
+    skip_category: str | None = None
 
 
 class DecisionEngine:
-    
+
     DOCS_PATTERNS = [
         r"\.md$",
         r"\.rst$",
@@ -37,7 +36,7 @@ class DecisionEngine:
         r"LICENSE",
         r"README",
     ]
-    
+
     DEPS_PATTERNS = [
         r"package-lock\.json$",
         r"yarn\.lock$",
@@ -53,7 +52,7 @@ class DecisionEngine:
         r"Podfile\.lock$",
         r"composer\.lock$",
     ]
-    
+
     TEST_PATTERNS = [
         r"_test\.py$",
         r"_tests\.py$",
@@ -66,10 +65,10 @@ class DecisionEngine:
         r"__tests__/",
         r"/tests/",
     ]
-    
+
     def __init__(self, config: Config):
         self.config = config
-    
+
     def decide(self, diff: ParsedDiff) -> ReviewDecision:
         if not self.config.sorge.get("enabled", True):
             return ReviewDecision(
@@ -77,44 +76,44 @@ class DecisionEngine:
                 reason="Sorge is disabled in config",
                 skip_category="disabled"
             )
-        
+
         if self._is_docs_only(diff):
             return ReviewDecision(
                 action=Action.SKIP,
                 reason="Docs-only changes - no review needed",
                 skip_category="docs"
             )
-        
+
         if self.config.filters.skip_deps and self._is_deps_only(diff):
             return ReviewDecision(
                 action=Action.SKIP,
                 reason="Dependency changes only - no review needed",
                 skip_category="deps"
             )
-        
+
         if self.config.filters.skip_tests and self._is_tests_only(diff):
             return ReviewDecision(
                 action=Action.SKIP,
                 reason="Test-only changes - no review needed",
                 skip_category="tests"
             )
-        
+
         total_lines = diff.lines_added + diff.lines_deleted
-        
+
         if total_lines < self.config.filters.min_lines:
             return ReviewDecision(
                 action=Action.SKIP,
                 reason=f"Too few lines changed ({total_lines} < {self.config.filters.min_lines})",
                 skip_category="too_small"
             )
-        
+
         if self.config.gpu.enabled and total_lines > self.config.gpu.threshold_lines:
             return ReviewDecision(
                 action=Action.GPU_REVIEW,
                 reason=f"Large diff ({total_lines} lines) - using GPU",
                 confidence=0.9
             )
-        
+
         if total_lines > self.config.filters.max_cpu_lines:
             if self.config.gpu.enabled:
                 return ReviewDecision(
@@ -123,31 +122,31 @@ class DecisionEngine:
                     confidence=0.8
                 )
             else:
-                logger.warning(f"Diff exceeds CPU limit but GPU disabled - running limited CPU review")
-        
+                logger.warning("Diff exceeds CPU limit but GPU disabled - running limited CPU review")
+
         return ReviewDecision(
             action=Action.CPU_REVIEW,
             reason=f"Standard review ({total_lines} lines)",
             confidence=0.95
         )
-    
+
     def _is_docs_only(self, diff: ParsedDiff) -> bool:
         if not self.config.filters.skip_docs:
             return False
-        
+
         for pattern in self.DOCS_PATTERNS:
             regex = re.compile(pattern, re.IGNORECASE)
             for file in diff.files:
                 if regex.search(file):
                     return True
-        
+
         if len(diff.files) == 1:
             ext = diff.files[0].split(".")[-1].lower() if "." in diff.files[0] else ""
             if ext in ["md", "rst", "txt"]:
                 return True
-        
+
         return False
-    
+
     def _is_deps_only(self, diff: ParsedDiff) -> bool:
         for pattern in self.DEPS_PATTERNS:
             regex = re.compile(pattern)
@@ -155,7 +154,7 @@ class DecisionEngine:
                 if regex.search(file):
                     return True
         return False
-    
+
     def _is_tests_only(self, diff: ParsedDiff) -> bool:
         for pattern in self.TEST_PATTERNS:
             regex = re.compile(pattern)
@@ -163,16 +162,16 @@ class DecisionEngine:
                 if regex.search(file):
                     return True
         return False
-    
+
     def get_complexity_score(self, diff: ParsedDiff) -> float:
         score = 0.0
-        
+
         score += min(diff.lines_added / 100, 5)
         score += min(diff.lines_deleted / 100, 5)
         score += min(len(diff.files) / 10, 3)
-        
+
         for file in diff.files:
             if any(x in file.lower() for x in ["api", "core", "service", "handler"]):
                 score += 0.5
-        
+
         return min(score, 10.0)

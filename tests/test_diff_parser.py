@@ -2,7 +2,7 @@
 
 import pytest
 
-from bot.diff_parser import DiffParser, ParsedDiff, FileChange
+from bot.diff_parser import DiffParser, FileChange, ParsedDiff
 
 
 @pytest.fixture
@@ -58,7 +58,7 @@ index 1234567..abcdefg 100644
 
 class TestDiffParser:
     def test_parse_empty_diff(self, parser):
-        diff = ParsedDiff(
+        ParsedDiff(
             raw="",
             files=[],
             file_changes={},
@@ -66,48 +66,48 @@ class TestDiffParser:
             lines_deleted=0,
             files_changed=0,
         )
-        
+
         result = parser.parse("")
-        
+
         assert result.files == []
         assert result.lines_added == 0
         assert result.lines_deleted == 0
         assert result.files_changed == 0
-    
+
     def test_parse_simple_diff(self, parser, simple_diff):
         result = parser.parse(simple_diff)
-        
+
         assert "main.py" in result.files
         assert result.lines_added > 0
         assert result.lines_deleted > 0
-    
+
     def test_parse_multi_file_diff(self, parser, multi_file_diff):
         result = parser.parse(multi_file_diff)
-        
+
         assert result.files_changed == 2
         assert "main.py" in result.files
         assert "utils.py" in result.files
-    
+
     def test_parse_detects_language(self, parser):
         diff = """diff --git a/script.py b/script.py
 +print("hello")"""
-        
+
         result = parser.parse(diff)
-        
+
         assert "python" in result.language_counts
-    
+
     def test_get_language_python(self, parser):
         lang = parser._detect_language("test.py")
         assert lang == "python"
-    
+
     def test_get_language_javascript(self, parser):
         lang = parser._detect_language("test.js")
         assert lang == "javascript"
-    
+
     def test_get_language_typescript(self, parser):
         lang = parser._detect_language("test.ts")
         assert lang == "typescript"
-    
+
     def test_get_language_unknown(self, parser):
         lang = parser._detect_language("test.xyz")
         assert lang is None
@@ -121,7 +121,7 @@ class TestFileChange:
             additions=10,
             deletions=5,
         )
-        
+
         assert change.path == "main.py"
         assert change.status == "modified"
         assert change.additions == 10
@@ -138,9 +138,9 @@ class TestParsedDiff:
             lines_deleted=50,
             files_changed=2,
         )
-        
+
         summary = diff.get_summary()
-        
+
         assert "2 file(s)" in summary
         assert "100 additions" in summary
         assert "50 deletions" in summary
