@@ -1,13 +1,21 @@
 """CPU-based reviewer using quantized models via llama.cpp"""
 
-import subprocess
+import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
+from pydantic import BaseModel, Field, ValidationError
 
 from loguru import logger
 
 from bot.config import Config
 from bot.diff_parser import ParsedDiff
+
+try:
+    from llama_cpp import Llama
+except ImportError:
+    Llama = None
+    logger.warning("llama-cpp-python is not installed. Local LLM inference will be unavailable.")
 
 LLAMA_CPP_REPO = "https://github.com/ggerganov/llama.cpp"
 MODEL_URLS = {
@@ -15,6 +23,22 @@ MODEL_URLS = {
     "mistral-7b-q4": "https://huggingface.co/TheBloke/Mistral-7B-Instruct-v0.1-GGUF/resolve/main/mistral-7b-instruct-v0.1.Q4_K_M.gguf",
     "codellama-7b-q4": "https://huggingface.co/TheBloke/CodeLlama-7B-Instruct-GGUF/resolve/main/codellama-7b-instruct.Q4_K_M.gguf",
 }
+
+# --- Validation Schemas ---
+
+class IssueSchema(BaseModel):
+    severity: str = Field(default="medium", pattern="^(high|medium|low)$")
+    file: str | None = None
+    line: int | None = None
+    message: str = Field(default="Unknown issue")
+    rule: str | None = None
+    suggestion: str | None = None
+
+class ReviewOutputSchema(BaseModel):
+    summary: str = Field(default="Review complete")
+    issues: list[IssueSchema] = Field(default_factory=list)
+    recommendations: list[str] = Field(default_factory=list)
+    score: float = Field(default=7.0, ge=0.0, le=10.0)
 
 
 @dataclass
@@ -25,7 +49,6 @@ class ReviewIssue:
     message: str = ""
     rule: str | None = None
     suggestion: str | None = None
-
 
 @dataclass
 class ReviewResult:
@@ -56,13 +79,13 @@ class ReviewResult:
             "review_type": self.review_type,
         }
 
-
 class CPUReviewer:
 
     def __init__(self, config: Config):
         self.config = config
         self.model_path = self._get_model_path()
         self.prompt_template = self._load_prompt_template()
+        self._llm_instance = None  # Cache model in memory
 
     def _get_model_path(self) -> Path | None:
         if self.config.model.path:
@@ -101,7 +124,7 @@ Analyze the code changes and provide feedback on:
 {diff}
 
 ## Response Format
-Provide a JSON response with:
+Provide ONLY a valid JSON response with:
 {{
   "summary": "Brief summary of the changes",
   "issues": [
@@ -116,82 +139,94 @@ Provide a JSON response with:
   "recommendations": ["List of improvement suggestions"],
   "score": 0-10 rating of code quality
 }}
-
-Be concise and focus on the most important issues."""
+"""
 
     def review(self, diff: ParsedDiff) -> ReviewResult:
-        if not self.model_path:
-            logger.warning("No model found - using heuristic review")
+        if not self.model_path or Llama is None:
+            logger.warning("No model found or llama-cpp-python missing - using heuristic review")
             return self._heuristic_review(diff)
 
         try:
             return self._llama_review(diff)
         except Exception as e:
-            logger.error(f"Llama review failed: {e}")
+            logger.error(f"Llama review failed: {e}", exc_info=True)
             return self._heuristic_review(diff)
 
     def _llama_review(self, diff: ParsedDiff) -> ReviewResult:
-        prompt = self.prompt_template.format(diff=diff.raw[:8000])
+        # Leave buffer for system prompt and output generation
+        max_diff_len = max(self.config.model.context_size * 2, 8000) 
+        prompt = self.prompt_template.format(diff=diff.raw[:max_diff_len])
+        
+        logger.debug(f"LLM Prompt generated (length: {len(prompt)})")
+        logger.trace(f"Full prompt text:\n{prompt}") # Deep debug hook
 
-        cmd = [
-            "llama-cli",
-            "-m", str(self.model_path),
-            "-p", prompt,
-            "-n", "512",
-            "--temp", "0.3",
-            "-t", str(self.config.model.threads),
-            "--no-display-prompt",
-        ]
+        # Lazy load model
+        if self._llm_instance is None:
+            logger.info(f"Loading {self.config.model.name} natively into memory via llama-cpp-python...")
+            self._llm_instance = Llama(
+                model_path=str(self.model_path),
+                n_ctx=self.config.model.context_size,
+                n_threads=self.config.model.threads,
+                verbose=False # Keep standard output clean
+            )
 
-        logger.debug(f"Running llama: {' '.join(cmd)}")
-
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=120,
+        logger.info("Executing LLM inference...")
+        response = self._llm_instance(
+            prompt,
+            max_tokens=1024,
+            temperature=0.2, # Low temperature for more deterministic JSON
+            stop=["```\n", "}\n\n"]
         )
 
-        if result.returncode != 0:
-            logger.error(f"Llama failed: {result.stderr}")
-            return self._heuristic_review(diff)
-
-        return self._parse_llama_output(result.stdout, diff)
+        output_text = response['choices'][0]['text'].strip()
+        logger.debug(f"Raw LLM output received (length: {len(output_text)})")
+        logger.trace(f"Raw LLM Text:\n{output_text}") # Deep debug hook
+        
+        return self._parse_llama_output(output_text, diff)
 
     def _parse_llama_output(self, output: str, diff: ParsedDiff) -> ReviewResult:
-        import json
+        # Attempt to strip markdown formatting if the model wrapped it in ```json
+        json_match = re.search(r'\{.*\}', output, re.DOTALL)
+        if json_match:
+            output = json_match.group(0)
 
         try:
             data = json.loads(output)
+            # Schema Validation via Pydantic
+            validated = ReviewOutputSchema(**data)
 
             issues = [
                 ReviewIssue(
-                    severity=i.get("severity", "medium"),
-                    file=i.get("file"),
-                    line=i.get("line"),
-                    message=i.get("message", ""),
-                    suggestion=i.get("suggestion"),
+                    severity=i.severity,
+                    file=i.file,
+                    line=i.line,
+                    message=i.message,
+                    suggestion=i.suggestion,
                 )
-                for i in data.get("issues", [])
+                for i in validated.issues
             ]
 
+            logger.info(f"Successfully validated review with {len(issues)} issues found.")
             return ReviewResult(
-                summary=data.get("summary", "Review complete"),
+                summary=validated.summary,
                 issues=issues,
-                recommendations=data.get("recommendations", []),
-                score=data.get("score", 7.0),
+                recommendations=validated.recommendations,
+                score=validated.score,
                 model=self.config.model.name,
                 review_type="cpu"
             )
-        except json.JSONDecodeError:
-            logger.warning("Failed to parse LLM output as JSON")
+
+        except (json.JSONDecodeError, ValidationError) as e:
+            logger.error(f"Failed to parse or validate LLM JSON output: {e}")
+            logger.debug(f"Problematic output segment: {output[:500]}")
+            
             return ReviewResult(
-                summary="Review generated (format parsing failed)",
+                summary="Review generation succeeded, but result formatting was corrupted.",
                 issues=[],
-                recommendations=[output[:500]],
+                recommendations=["Consider adjusting the LLM prompt for stricter JSON output."],
                 score=7.0,
                 model=self.config.model.name,
-                review_type="cpu"
+                review_type="cpu-error"
             )
 
     def _heuristic_review(self, diff: ParsedDiff) -> ReviewResult:
@@ -241,7 +276,6 @@ Be concise and focus on the most important issues."""
             model="heuristic",
             review_type="cpu"
         )
-
 
 def download_model(model_name: str, target_dir: Path | None = None) -> Path:
     if model_name not in MODEL_URLS:
