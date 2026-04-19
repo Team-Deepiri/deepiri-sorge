@@ -133,35 +133,28 @@ class DecisionEngine:
     def _is_docs_only(self, diff: ParsedDiff) -> bool:
         if not self.config.filters.skip_docs:
             return False
+        if not diff.files:
+            return False
 
-        for pattern in self.DOCS_PATTERNS:
-            regex = re.compile(pattern, re.IGNORECASE)
-            for file in diff.files:
-                if regex.search(file):
-                    return True
-
-        if len(diff.files) == 1:
-            ext = diff.files[0].split(".")[-1].lower() if "." in diff.files[0] else ""
-            if ext in ["md", "rst", "txt"]:
-                return True
-
-        return False
+        return all(self._matches_any_pattern(file, self.DOCS_PATTERNS, re.IGNORECASE) for file in diff.files)
 
     def _is_deps_only(self, diff: ParsedDiff) -> bool:
-        for pattern in self.DEPS_PATTERNS:
-            regex = re.compile(pattern)
-            for file in diff.files:
-                if regex.search(file):
-                    return True
-        return False
+        if not diff.files:
+            return False
+        return all(self._matches_any_pattern(file, self.DEPS_PATTERNS) for file in diff.files)
 
     def _is_tests_only(self, diff: ParsedDiff) -> bool:
-        for pattern in self.TEST_PATTERNS:
-            regex = re.compile(pattern)
-            for file in diff.files:
-                if regex.search(file):
-                    return True
-        return False
+        if not diff.files:
+            return False
+        return all(self._matches_any_pattern(file, self.TEST_PATTERNS) for file in diff.files)
+
+    def _matches_any_pattern(
+        self,
+        value: str,
+        patterns: list[str],
+        flags: re.RegexFlag = re.NOFLAG,
+    ) -> bool:
+        return any(re.compile(pattern, flags).search(value) for pattern in patterns)
 
     def get_complexity_score(self, diff: ParsedDiff) -> float:
         score = 0.0
