@@ -1,0 +1,14 @@
+{
+  "summary": "Adds a helper",
+  "issues": [
+    {
+      "severity": "high",
+      "file": "main.py",
+      "line": 42,
+      "message": "Possible bug",
+      "suggestion": "Add a guard"
+    }
+  ],
+  "recommendations": ["Add tests"],
+  "score": 8.5
+}
