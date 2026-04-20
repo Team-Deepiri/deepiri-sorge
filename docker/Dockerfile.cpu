@@ -13,13 +13,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Install Poetry
+RUN pip install poetry
 
-COPY bot/ ./bot/
-COPY pyproject.toml .
+# Copy dependency files first for caching
+COPY pyproject.toml poetry.lock ./
 
-RUN pip install --no-cache-dir -e .
+# Install dependencies (no project yet)
+RUN poetry install --no-root --no-interaction --no-ansi
+
+# Copy the rest of the project
+COPY . .
+
+# Install the project itself (so CLI entry points like `sorge` work)
+RUN poetry install --no-interaction --no-ansi
 
 ENV PATH="/app:${PATH}"
 
