@@ -14,6 +14,8 @@ class Action(Enum):
     SKIP = "skip"
     CPU_REVIEW = "cpu_review"
     GPU_REVIEW = "gpu_review"
+    GITHUB_MODELS = "github_models"
+    GEMINI = "gemini"
 
 
 @dataclass
@@ -107,6 +109,42 @@ class DecisionEngine:
                 skip_category="too_small"
             )
 
+        estimated_tokens = self._estimate_tokens(diff)
+
+        if self.config.github_models.enabled and self.config.gemini.enabled:
+            if estimated_tokens <= self.config.routing.small_pr_threshold:
+                return ReviewDecision(
+                    action=Action.GITHUB_MODELS,
+                    reason=f"Small diff (~{estimated_tokens} tokens) - using GitHub Models",
+                    confidence=0.95
+                )
+            elif estimated_tokens > self.config.routing.large_pr_threshold:
+                return ReviewDecision(
+                    action=Action.GEMINI,
+                    reason=f"Large diff (~{estimated_tokens} tokens) - using Gemini 2.5 Pro",
+                    confidence=0.95
+                )
+            else:
+                return ReviewDecision(
+                    action=Action.GITHUB_MODELS,
+                    reason=f"Medium diff (~{estimated_tokens} tokens) - using GitHub Models",
+                    confidence=0.9
+                )
+
+        if self.config.github_models.enabled:
+            return ReviewDecision(
+                action=Action.GITHUB_MODELS,
+                reason=f"Using GitHub Models ({total_lines} lines)",
+                confidence=0.95
+            )
+
+        if self.config.gemini.enabled:
+            return ReviewDecision(
+                action=Action.GEMINI,
+                reason=f"Using Gemini 2.5 Pro ({total_lines} lines)",
+                confidence=0.95
+            )
+
         if self.config.gpu.enabled and total_lines > self.config.gpu.threshold_lines:
             return ReviewDecision(
                 action=Action.GPU_REVIEW,
@@ -130,38 +168,27 @@ class DecisionEngine:
             confidence=0.95
         )
 
+    def _estimate_tokens(self, diff: ParsedDiff) -> int:
+        raw_length = len(diff.raw)
+        return raw_length // 4
+
+    def _matches_any_pattern(self, filename: str, patterns: list[str], flags: int = 0) -> bool:
+        return any(re.search(p, filename, flags) for p in patterns)
+
     def _is_docs_only(self, diff: ParsedDiff) -> bool:
-        if not self.config.filters.skip_docs:
+        if not self.config.filters.skip_docs or not diff.files:
             return False
-
-        for pattern in self.DOCS_PATTERNS:
-            regex = re.compile(pattern, re.IGNORECASE)
-            for file in diff.files:
-                if regex.search(file):
-                    return True
-
-        if len(diff.files) == 1:
-            ext = diff.files[0].split(".")[-1].lower() if "." in diff.files[0] else ""
-            if ext in ["md", "rst", "txt"]:
-                return True
-
-        return False
+        return all(self._matches_any_pattern(f, self.DOCS_PATTERNS, re.IGNORECASE) for f in diff.files)
 
     def _is_deps_only(self, diff: ParsedDiff) -> bool:
-        for pattern in self.DEPS_PATTERNS:
-            regex = re.compile(pattern)
-            for file in diff.files:
-                if regex.search(file):
-                    return True
-        return False
+        if not diff.files:
+            return False
+        return all(self._matches_any_pattern(f, self.DEPS_PATTERNS) for f in diff.files)
 
     def _is_tests_only(self, diff: ParsedDiff) -> bool:
-        for pattern in self.TEST_PATTERNS:
-            regex = re.compile(pattern)
-            for file in diff.files:
-                if regex.search(file):
-                    return True
-        return False
+        if not diff.files:
+            return False
+        return all(self._matches_any_pattern(f, self.TEST_PATTERNS) for f in diff.files)
 
     def get_complexity_score(self, diff: ParsedDiff) -> float:
         score = 0.0
