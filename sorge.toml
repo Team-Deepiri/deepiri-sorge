@@ -1,4 +1,4 @@
-# Example sorge.toml configuration
+# Sorge configuration
 
 [sorge]
 enabled = true
@@ -18,14 +18,21 @@ include_style = true
 
 [gpu]
 enabled = false
-threshold_lines = 1000
-endpoint = ""
-timeout = 60
 
 [model]
 name = "codellama-7b-q4"
-context_size = 4096
-threads = 4
+
+[github_models]
+enabled = true
+model = "gpt-4o"
+
+[gemini]
+enabled = true
+model = "gemini-2.5-flash"
+
+[routing]
+small_pr_threshold = 10000
+large_pr_threshold = 25000
 
 [cache]
 enabled = true
