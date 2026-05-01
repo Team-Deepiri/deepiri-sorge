@@ -13,6 +13,7 @@ from bot.cpu_reviewer import CPUReviewer
 from bot.decision_engine import Action, DecisionEngine
 from bot.diff_parser import DiffParser
 from bot.gpu_runner import GPURunner
+from bot.runners import GitHubModelsRunner, GeminiRunner
 
 
 def parse_args() -> argparse.Namespace:
@@ -57,7 +58,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--mode",
-        choices=["auto", "cpu", "gpu", "skip"],
+        choices=["auto", "cpu", "gpu", "github", "gemini", "skip"],
         default="auto",
         help="Review mode (default: auto)",
     )
@@ -105,22 +106,44 @@ def main() -> None:
 
     logger.info(f"Decision: {decision.action.value} - {decision.reason}")
 
-    if decision.action == Action.SKIP:
+    if decision.action == Action.SKIP and args.mode == "auto":
         logger.info("Skipping review")
         print(json.dumps({"action": "skip", "reason": decision.reason}))
         return
 
     review_result = None
 
-    if decision.action == Action.CPU_REVIEW or args.mode == "cpu":
+    effective_mode = args.mode if args.mode != "auto" else decision.action.value
+
+    if effective_mode in ("github", Action.GITHUB_MODELS.value):
+        logger.info("Running GitHub Models review")
+        runner = GitHubModelsRunner(
+            api_key=config.github_models.api_key,
+            model=config.github_models.model,
+        )
+        review_result = runner.review(parsed_diff)
+
+    elif effective_mode in ("gemini", Action.GEMINI.value):
+        logger.info("Running Gemini review")
+        runner = GeminiRunner(
+            api_key=config.gemini.api_key,
+            model=config.gemini.model,
+        )
+        review_result = runner.review(parsed_diff)
+
+    elif effective_mode in ("cpu", Action.CPU_REVIEW.value):
         logger.info("Running CPU review")
         reviewer = CPUReviewer(config)
         review_result = reviewer.review(parsed_diff)
 
-    elif decision.action == Action.GPU_REVIEW or args.mode == "gpu":
+    elif effective_mode in ("gpu", Action.GPU_REVIEW.value):
         logger.info("Running GPU review")
         gpu_runner = GPURunner(config)
         review_result = gpu_runner.review(parsed_diff)
+
+    elif effective_mode == "skip":
+        logger.info("Skipping review (--mode skip)")
+        print(json.dumps({"action": "skip", "reason": "mode=skip"}))
 
     if review_result:
         logger.info(f"Review complete: {len(review_result.issues)} issues found")

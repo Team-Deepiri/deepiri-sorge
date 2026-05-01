@@ -4,7 +4,10 @@ import os
 from pathlib import Path
 
 import toml
+from dotenv import load_dotenv
 from pydantic import BaseModel, Field
+
+load_dotenv()
 
 
 class FiltersConfig(BaseModel):
@@ -38,6 +41,23 @@ class ModelConfig(BaseModel):
     threads: int = Field(default=4, description="CPU threads for inference")
 
 
+class GitHubModelsConfig(BaseModel):
+    enabled: bool = Field(default=True, description="Enable GitHub Models")
+    model: str = Field(default="gpt-4o", description="Model to use")
+    api_key: str | None = Field(default=None, description="API key (uses GITHUB_TOKEN env if not set)")
+
+
+class GeminiConfig(BaseModel):
+    enabled: bool = Field(default=True, description="Enable Gemini")
+    model: str = Field(default="gemini-2.5-flash", description="Model to use")
+    api_key: str | None = Field(default=None, description="API key (uses GOOGLE_API_KEY env if not set)")
+
+
+class RoutingConfig(BaseModel):
+    small_pr_threshold: int = Field(default=10000, description="Max tokens for small PR (GitHub Models)")
+    large_pr_threshold: int = Field(default=25000, description="Min tokens for large PR (Gemini)")
+
+
 class CacheConfig(BaseModel):
     enabled: bool = Field(default=True, description="Enable result caching")
     ttl_hours: int = Field(default=24, description="Cache TTL in hours")
@@ -49,6 +69,9 @@ class Config(BaseModel):
     review: ReviewConfig = Field(default_factory=ReviewConfig)
     gpu: GPUConfig = Field(default_factory=GPUConfig)
     model: ModelConfig = Field(default_factory=ModelConfig)
+    github_models: GitHubModelsConfig = Field(default_factory=GitHubModelsConfig)
+    gemini: GeminiConfig = Field(default_factory=GeminiConfig)
+    routing: RoutingConfig = Field(default_factory=RoutingConfig)
     cache: CacheConfig = Field(default_factory=CacheConfig)
 
     @classmethod
@@ -84,6 +107,18 @@ class Config(BaseModel):
 
         if os.getenv("SORGE_MODEL_PATH"):
             config.model.path = os.getenv("SORGE_MODEL_PATH")
+
+        if os.getenv("SORGE_GITHUB_MODELS_ENABLED"):
+            config.github_models.enabled = os.getenv("SORGE_GITHUB_MODELS_ENABLED").lower() == "true"
+
+        if os.getenv("SORGE_GITHUB_MODELS_MODEL"):
+            config.github_models.model = os.getenv("SORGE_GITHUB_MODELS_MODEL")
+
+        if os.getenv("SORGE_GEMINI_ENABLED"):
+            config.gemini.enabled = os.getenv("SORGE_GEMINI_ENABLED").lower() == "true"
+
+        if os.getenv("SORGE_GEMINI_MODEL"):
+            config.gemini.model = os.getenv("SORGE_GEMINI_MODEL")
 
         return config
 

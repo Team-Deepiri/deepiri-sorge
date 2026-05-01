@@ -76,36 +76,11 @@ jobs:
             echo "EXISTS=false" >> $GITHUB_OUTPUT
           fi
       
-      - name: Download model (CPU mode)
-        if: steps.config.outputs.EXISTS == 'false' || contains(fromJSON('["auto", "cpu"]'), inputs.mode || 'auto')
-        run: |
-          mkdir -p ~/.cache/sorge/models
-          
-          MODEL_PATH="${MODEL_PATH:-~/.cache/sorge/models/codellama-7b.Q4_K_M.gguf}"
-          
-          if [ ! -f "$MODEL_PATH" ]; then
-            echo "Downloading CodeLlama 7B Q4 model..."
-            python -c "
-import urllib.request
-import os
-
-url = 'https://huggingface.co/TheBloke/CodeLlama-7B-Instruct-GGUF/resolve/main/codellama-7b-instruct.Q4_K_M.gguf'
-path = os.path.expanduser('~/.cache/sorge/models/codellama-7b.Q4_K_M.gguf')
-os.makedirs(os.path.dirname(path), exist_ok=True)
-
-if not os.path.exists(path):
-    print(f'Downloading to {path}...')
-    urllib.request.urlretrieve(url, path)
-    print('Download complete')
-else:
-    print('Model already exists')
-"
-          fi
-      
       - name: Run AI review
         id: review
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           SORGE_MODE: ${{ inputs.mode || 'auto' }}
         run: |
           python -m bot.main \
