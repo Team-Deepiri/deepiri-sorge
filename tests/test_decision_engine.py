@@ -9,7 +9,10 @@ from bot.diff_parser import ParsedDiff
 
 @pytest.fixture
 def config():
-    return Config()
+    cfg = Config()
+    cfg.github_models.enabled = False
+    cfg.gemini.enabled = False
+    return cfg
 
 
 @pytest.fixture
