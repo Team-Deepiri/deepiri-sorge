@@ -106,16 +106,14 @@ class DiffParser:
             if line.startswith("diff --git"):
                 parts = line.split(" ")
                 if len(parts) >= 4:
+                    a_path = parts[2]
                     b_path = parts[3]
 
-                    if b_path.startswith("b/"):
-                        clean_path = b_path[2:]
-                    else:
-                        clean_path = b_path
+                    clean_path = self._clean_diff_path(b_path)
 
                     files.append(clean_path)
 
-                    status = self._get_file_status(b_path)
+                    status = self._get_file_status(a_path, b_path)
                     current_change = FileChange(
                         path=clean_path,
                         status=status,
@@ -126,6 +124,27 @@ class DiffParser:
                     lang = self._detect_language(clean_path)
                     if lang:
                         language_counts[lang] = language_counts.get(lang, 0) + 1
+
+            elif line.startswith("--- ") and current_change is not None:
+                old_path = line[4:].strip()
+                if old_path == "/dev/null":
+                    current_change.status = "added"
+
+            elif line.startswith("+++ ") and current_change is not None:
+                new_path = line[4:].strip()
+                if new_path == "/dev/null":
+                    current_change.status = "deleted"
+                else:
+                    clean_path = self._clean_diff_path(new_path)
+                    if clean_path != current_change.path:
+                        previous_path = current_change.path
+                        current_change.path = clean_path
+                        file_changes[clean_path] = current_change
+
+                        if previous_path in file_changes:
+                            del file_changes[previous_path]
+                        if files and files[-1] == previous_path:
+                            files[-1] = clean_path
 
             elif line.startswith("@@"):
                 in_diff = True
@@ -150,14 +169,17 @@ class DiffParser:
             language_counts=language_counts
         )
 
-    def _get_file_status(self, path: str) -> str:
-        if path.startswith("a/") or path.startswith("b/"):
-            path = path[2:]
-
-        if "/dev/null" in path:
+    def _get_file_status(self, old_path: str, new_path: str) -> str:
+        if old_path == "/dev/null":
             return "added"
-
+        if new_path == "/dev/null":
+            return "deleted"
         return "modified"
+
+    def _clean_diff_path(self, path: str) -> str:
+        if path.startswith("a/") or path.startswith("b/"):
+            return path[2:]
+        return path
 
     def _detect_language(self, filepath: str) -> str | None:
         ext = filepath.split(".")[-1].lower() if "." in filepath else ""
