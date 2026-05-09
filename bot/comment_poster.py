@@ -4,6 +4,12 @@ import requests
 from loguru import logger
 
 from bot.cpu_reviewer import ReviewResult
+from bot.utils.formatting import (
+    clean_multiline_text,
+    format_blockquote,
+    format_issue_location,
+    normalize_whitespace,
+)
 
 
 class CommentPoster:
@@ -65,13 +71,14 @@ class CommentPoster:
         lines = [
             "## AI Code Review",
             "",
-            f"**Model:** {review.model} ({review.review_type})",
+            f"**Model:** {normalize_whitespace(review.model)} "
+            f"({normalize_whitespace(review.review_type)})",
             f"**Quality Score:** {review.score:.1f}/10",
             "",
             "---",
             "",
             "### Summary",
-            review.summary,
+            clean_multiline_text(review.summary),
             "",
         ]
 
@@ -91,15 +98,17 @@ class CommentPoster:
 
             for issue in review.issues:
                 icon = severity_icons.get(issue.severity, ":memo:")
-                location = f"**{issue.file}**" if issue.file else "General"
-                if issue.line:
-                    location += f":{issue.line}"
+                location = format_issue_location(issue.file, issue.line)
 
                 lines.append(f"{icon} {location}")
-                lines.append(f"> {issue.message}")
+                lines.append(format_blockquote(issue.message))
 
                 if issue.suggestion:
-                    lines.append(f"> _Suggestion: {issue.suggestion}_")
+                    lines.append(
+                        format_blockquote(
+                            f"_Suggestion: {normalize_whitespace(issue.suggestion)}_"
+                        )
+                    )
 
                 lines.append("")
 
@@ -112,7 +121,7 @@ class CommentPoster:
             ])
 
             for rec in review.recommendations:
-                lines.append(f"- {rec}")
+                lines.append(f"- {normalize_whitespace(rec)}")
 
             lines.append("")
 
