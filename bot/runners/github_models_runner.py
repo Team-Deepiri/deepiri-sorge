@@ -13,7 +13,7 @@ from bot.runners.base import BaseRunner, ReviewResult
 class GitHubModelsRunner(BaseRunner):
     """Runner for GitHub Models (Azure AI Inference)"""
 
-    ENDPOINT = "https://models.inference.ai.azure.com/v1/chat/completions"
+    ENDPOINT = "https://models.inference.ai.azure.com/chat/completions"
     DEFAULT_MODEL = "gpt-4o"
 
     def __init__(self, api_key: str | None = None, model: str | None = None):
@@ -45,6 +45,7 @@ class GitHubModelsRunner(BaseRunner):
         prompt = self._build_prompt(diff)
 
         payload = {
+            "model": self.model,
             "messages": [
                 {
                     "role": "user",
@@ -58,7 +59,7 @@ class GitHubModelsRunner(BaseRunner):
         logger.debug(f"Calling GitHub Models with model: {self.model}")
 
         response = requests.post(
-            f"{self.ENDPOINT}?model={self.model}",
+            self.ENDPOINT,
             json=payload,
             headers=headers,
             timeout=120,
