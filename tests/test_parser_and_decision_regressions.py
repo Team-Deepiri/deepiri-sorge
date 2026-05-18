@@ -58,7 +58,10 @@ class TestDecisionEngineRegressions:
             files_changed=2,
         )
 
-        decision = DecisionEngine(Config()).decide(diff)
+        config = Config()
+        config.github_models.enabled = False
+        config.gemini.enabled = False
+        decision = DecisionEngine(config).decide(diff)
 
         assert decision.action == Action.CPU_REVIEW
         assert decision.skip_category is None
@@ -73,7 +76,10 @@ class TestDecisionEngineRegressions:
             files_changed=2,
         )
 
-        decision = DecisionEngine(Config()).decide(diff)
+        config = Config()
+        config.github_models.enabled = False
+        config.gemini.enabled = False
+        decision = DecisionEngine(config).decide(diff)
 
         assert decision.action == Action.CPU_REVIEW
         assert decision.skip_category is None
@@ -107,6 +113,9 @@ class TestDecisionEngineRegressions:
             files_changed=2,
         )
 
+        config = Config()
+        config.github_models.enabled = False
+        config.gemini.enabled = False
         decision = DecisionEngine(config).decide(diff)
 
         assert decision.action == Action.CPU_REVIEW
