@@ -53,6 +53,26 @@ class GeminiConfig(BaseModel):
     api_key: str | None = Field(default=None, description="API key (uses GOOGLE_API_KEY env if not set)")
 
 
+class OpenRouterConfig(BaseModel):
+    enabled: bool = Field(default=True, description="Enable OpenRouter")
+    model: str = Field(default="qwen3-coder", description="Model to use")
+    endpoint: str = Field(
+        default="https://openrouter.ai/api/v1/chat/completions",
+        description="OpenRouter chat completions endpoint",
+    )
+    api_key: str | None = Field(default=None, description="API key (uses OPENROUTER_API_KEY env if not set)")
+
+
+class GroqConfig(BaseModel):
+    enabled: bool = Field(default=True, description="Enable Groq")
+    model: str = Field(default="qwen3-32b", description="Model to use")
+    endpoint: str = Field(
+        default="https://api.groq.com/openai/v1/chat/completions",
+        description="Groq chat completions endpoint",
+    )
+    api_key: str | None = Field(default=None, description="API key (uses GROQ_API_KEY env if not set)")
+
+
 class RoutingConfig(BaseModel):
     small_pr_threshold: int = Field(default=10000, description="Max tokens for small PR (GitHub Models)")
     large_pr_threshold: int = Field(default=25000, description="Min tokens for large PR (Gemini)")
@@ -71,6 +91,8 @@ class Config(BaseModel):
     model: ModelConfig = Field(default_factory=ModelConfig)
     github_models: GitHubModelsConfig = Field(default_factory=GitHubModelsConfig)
     gemini: GeminiConfig = Field(default_factory=GeminiConfig)
+    openrouter: OpenRouterConfig = Field(default_factory=OpenRouterConfig)
+    groq: GroqConfig = Field(default_factory=GroqConfig)
     routing: RoutingConfig = Field(default_factory=RoutingConfig)
     cache: CacheConfig = Field(default_factory=CacheConfig)
 
@@ -119,6 +141,30 @@ class Config(BaseModel):
 
         if os.getenv("SORGE_GEMINI_MODEL"):
             config.gemini.model = os.getenv("SORGE_GEMINI_MODEL")
+
+        if os.getenv("SORGE_OPENROUTER_ENABLED"):
+            config.openrouter.enabled = os.getenv("SORGE_OPENROUTER_ENABLED").lower() == "true"
+
+        if os.getenv("SORGE_OPENROUTER_MODEL"):
+            config.openrouter.model = os.getenv("SORGE_OPENROUTER_MODEL")
+
+        if os.getenv("SORGE_OPENROUTER_ENDPOINT"):
+            config.openrouter.endpoint = os.getenv("SORGE_OPENROUTER_ENDPOINT")
+
+        if os.getenv("SORGE_OPENROUTER_API_KEY"):
+            config.openrouter.api_key = os.getenv("SORGE_OPENROUTER_API_KEY")
+
+        if os.getenv("SORGE_GROQ_ENABLED"):
+            config.groq.enabled = os.getenv("SORGE_GROQ_ENABLED").lower() == "true"
+
+        if os.getenv("SORGE_GROQ_MODEL"):
+            config.groq.model = os.getenv("SORGE_GROQ_MODEL")
+
+        if os.getenv("SORGE_GROQ_ENDPOINT"):
+            config.groq.endpoint = os.getenv("SORGE_GROQ_ENDPOINT")
+
+        if os.getenv("SORGE_GROQ_API_KEY"):
+            config.groq.api_key = os.getenv("SORGE_GROQ_API_KEY")
 
         return config
 

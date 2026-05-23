@@ -1,7 +1,7 @@
 """Tests for config management"""
 
 
-from bot.config import Config, FiltersConfig, GPUConfig, ModelConfig
+from bot.config import Config, FiltersConfig, GPUConfig, GroqConfig, ModelConfig, OpenRouterConfig
 
 
 class TestConfig:
@@ -12,6 +12,12 @@ class TestConfig:
         assert config.filters.min_lines == 20
         assert config.filters.max_cpu_lines == 500
         assert config.gpu.enabled is False
+        assert config.openrouter.enabled is True
+        assert config.openrouter.model == "qwen3-coder"
+        assert config.openrouter.endpoint == "https://openrouter.ai/api/v1/chat/completions"
+        assert config.groq.enabled is True
+        assert config.groq.model == "qwen3-32b"
+        assert config.groq.endpoint == "https://api.groq.com/openai/v1/chat/completions"
 
     def test_filters_defaults(self):
         filters = FiltersConfig()
@@ -29,6 +35,22 @@ class TestConfig:
         assert gpu.endpoint == ""
         assert gpu.timeout == 60
 
+    def test_openrouter_defaults(self):
+        openrouter = OpenRouterConfig()
+
+        assert openrouter.enabled is True
+        assert openrouter.model == "qwen3-coder"
+        assert openrouter.endpoint == "https://openrouter.ai/api/v1/chat/completions"
+        assert openrouter.api_key is None
+
+    def test_groq_defaults(self):
+        groq = GroqConfig()
+
+        assert groq.enabled is True
+        assert groq.model == "qwen3-32b"
+        assert groq.endpoint == "https://api.groq.com/openai/v1/chat/completions"
+        assert groq.api_key is None
+
     def test_model_defaults(self):
         model = ModelConfig()
 
@@ -45,6 +67,8 @@ class TestConfig:
         assert "gpu" in data
         assert "model" in data
         assert "review" in data
+        assert "openrouter" in data
+        assert "groq" in data
 
 
 class TestConfigOverrides:

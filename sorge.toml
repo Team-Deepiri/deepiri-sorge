@@ -30,6 +30,16 @@ model = "gpt-4o"
 enabled = true
 model = "gemini-2.5-flash"
 
+[openrouter]
+enabled = true
+model = "qwen3-coder"
+endpoint = "https://openrouter.ai/api/v1/chat/completions"
+
+[groq]
+enabled = true
+model = "qwen3-32b"
+endpoint = "https://api.groq.com/openai/v1/chat/completions"
+
 [routing]
 small_pr_threshold = 10000
 large_pr_threshold = 25000
