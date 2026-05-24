@@ -12,10 +12,10 @@ class TestConfig:
         assert config.filters.min_lines == 20
         assert config.filters.max_cpu_lines == 500
         assert config.gpu.enabled is False
-        assert config.openrouter.enabled is True
+        assert config.openrouter.enabled is False
         assert config.openrouter.model == "qwen3-coder"
         assert config.openrouter.endpoint == "https://openrouter.ai/api/v1/chat/completions"
-        assert config.groq.enabled is True
+        assert config.groq.enabled is False
         assert config.groq.model == "qwen3-32b"
         assert config.groq.endpoint == "https://api.groq.com/openai/v1/chat/completions"
 
@@ -38,7 +38,7 @@ class TestConfig:
     def test_openrouter_defaults(self):
         openrouter = OpenRouterConfig()
 
-        assert openrouter.enabled is True
+        assert openrouter.enabled is False
         assert openrouter.model == "qwen3-coder"
         assert openrouter.endpoint == "https://openrouter.ai/api/v1/chat/completions"
         assert openrouter.api_key is None
@@ -46,7 +46,7 @@ class TestConfig:
     def test_groq_defaults(self):
         groq = GroqConfig()
 
-        assert groq.enabled is True
+        assert groq.enabled is False
         assert groq.model == "qwen3-32b"
         assert groq.endpoint == "https://api.groq.com/openai/v1/chat/completions"
         assert groq.api_key is None

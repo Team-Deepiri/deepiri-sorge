@@ -15,6 +15,8 @@ class Action(Enum):
     CPU_REVIEW = "cpu_review"
     GPU_REVIEW = "gpu_review"
     GITHUB_MODELS = "github_models"
+    OPENROUTER = "openrouter"
+    GROQ = "groq"
     GEMINI = "gemini"
 
 
@@ -111,38 +113,57 @@ class DecisionEngine:
 
         estimated_tokens = self._estimate_tokens(diff)
 
-        if self.config.github_models.enabled and self.config.gemini.enabled:
-            if estimated_tokens <= self.config.routing.small_pr_threshold:
-                return ReviewDecision(
-                    action=Action.GITHUB_MODELS,
-                    reason=f"Small diff (~{estimated_tokens} tokens) - using GitHub Models",
-                    confidence=0.95
-                )
-            elif estimated_tokens > self.config.routing.large_pr_threshold:
-                return ReviewDecision(
-                    action=Action.GEMINI,
-                    reason=f"Large diff (~{estimated_tokens} tokens) - using Gemini 2.5 Pro",
-                    confidence=0.95
-                )
-            else:
-                return ReviewDecision(
-                    action=Action.GITHUB_MODELS,
-                    reason=f"Medium diff (~{estimated_tokens} tokens) - using GitHub Models",
-                    confidence=0.9
-                )
+        # New three-tier routing: small -> Groq, medium -> OpenRouter, large -> Gemini
+        groq_enabled = bool(self.config.groq.enabled)
+        openrouter_enabled = bool(self.config.openrouter.enabled)
+        gemini_enabled = bool(self.config.gemini.enabled)
 
-        if self.config.github_models.enabled:
+        small_t = self.config.routing.small_pr_threshold
+        medium_t = self.config.routing.medium_pr_threshold
+        large_t = self.config.routing.large_pr_threshold
+
+        # Exact tier hits
+        if groq_enabled and estimated_tokens <= small_t:
             return ReviewDecision(
-                action=Action.GITHUB_MODELS,
-                reason=f"Using GitHub Models ({total_lines} lines)",
+                action=Action.GROQ,
+                reason=f"Small diff (~{estimated_tokens} tokens) - using Groq",
                 confidence=0.95
             )
 
-        if self.config.gemini.enabled:
+        if gemini_enabled and estimated_tokens > large_t:
             return ReviewDecision(
                 action=Action.GEMINI,
-                reason=f"Using Gemini 2.5 Pro ({total_lines} lines)",
+                reason=f"Large diff (~{estimated_tokens} tokens) - using Gemini",
                 confidence=0.95
+            )
+
+        if openrouter_enabled and small_t < estimated_tokens <= medium_t:
+            return ReviewDecision(
+                action=Action.OPENROUTER,
+                reason=f"Medium diff (~{estimated_tokens} tokens) - using OpenRouter",
+                confidence=0.9
+            )
+
+        # Fallback selection when the preferred tiered provider is disabled
+        if groq_enabled:
+            return ReviewDecision(
+                action=Action.GROQ,
+                reason=f"Fallback to Groq (~{estimated_tokens} tokens)",
+                confidence=0.8
+            )
+
+        if openrouter_enabled:
+            return ReviewDecision(
+                action=Action.OPENROUTER,
+                reason=f"Fallback to OpenRouter (~{estimated_tokens} tokens)",
+                confidence=0.8
+            )
+
+        if gemini_enabled:
+            return ReviewDecision(
+                action=Action.GEMINI,
+                reason=f"Fallback to Gemini (~{estimated_tokens} tokens)",
+                confidence=0.8
             )
 
         if self.config.gpu.enabled and total_lines > self.config.gpu.threshold_lines:

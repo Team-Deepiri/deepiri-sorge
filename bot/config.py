@@ -54,7 +54,7 @@ class GeminiConfig(BaseModel):
 
 
 class OpenRouterConfig(BaseModel):
-    enabled: bool = Field(default=True, description="Enable OpenRouter")
+    enabled: bool = Field(default=False, description="Enable OpenRouter")
     model: str = Field(default="qwen3-coder", description="Model to use")
     endpoint: str = Field(
         default="https://openrouter.ai/api/v1/chat/completions",
@@ -64,7 +64,7 @@ class OpenRouterConfig(BaseModel):
 
 
 class GroqConfig(BaseModel):
-    enabled: bool = Field(default=True, description="Enable Groq")
+    enabled: bool = Field(default=False, description="Enable Groq")
     model: str = Field(default="qwen3-32b", description="Model to use")
     endpoint: str = Field(
         default="https://api.groq.com/openai/v1/chat/completions",
@@ -74,8 +74,9 @@ class GroqConfig(BaseModel):
 
 
 class RoutingConfig(BaseModel):
-    small_pr_threshold: int = Field(default=10000, description="Max tokens for small PR (GitHub Models)")
-    large_pr_threshold: int = Field(default=25000, description="Min tokens for large PR (Gemini)")
+    small_pr_threshold: int = Field(default=4500, description="Max tokens for small PR (Groq)")
+    medium_pr_threshold: int = Field(default=30000, description="Max tokens for medium PR (OpenRouter)")
+    large_pr_threshold: int = Field(default=30000, description="Min tokens for large PR (Gemini)")
 
 
 class CacheConfig(BaseModel):

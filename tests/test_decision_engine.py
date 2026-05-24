@@ -12,6 +12,8 @@ def config():
     cfg = Config()
     cfg.github_models.enabled = False
     cfg.gemini.enabled = False
+    cfg.groq.enabled = False
+    cfg.openrouter.enabled = False
     return cfg
 
 
@@ -142,6 +144,33 @@ class TestDecisionEngine:
         decision = engine.decide(large_diff)
 
         assert decision.action == Action.CPU_REVIEW
+
+    def test_routing_prefers_groq_for_small_tokens(self, engine, medium_diff):
+        engine.config.groq.enabled = True
+        engine.config.openrouter.enabled = True
+        engine.config.gemini.enabled = True
+
+        decision = engine.decide(medium_diff)
+
+        assert decision.action == Action.GROQ
+
+    def test_routing_prefers_openrouter_when_groq_disabled(self, engine, medium_diff):
+        engine.config.groq.enabled = False
+        engine.config.openrouter.enabled = True
+        engine.config.gemini.enabled = True
+
+        decision = engine.decide(medium_diff)
+
+        assert decision.action == Action.OPENROUTER
+
+    def test_routing_prefers_gemini_for_large_tokens(self, engine, large_diff):
+        engine.config.groq.enabled = False
+        engine.config.openrouter.enabled = False
+        engine.config.gemini.enabled = True
+
+        decision = engine.decide(large_diff)
+
+        assert decision.action == Action.GEMINI
 
 
 class TestComplexityScoring:
