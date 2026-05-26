@@ -13,7 +13,7 @@ from bot.cpu_reviewer import CPUReviewer
 from bot.decision_engine import Action, DecisionEngine
 from bot.diff_parser import DiffParser
 from bot.gpu_runner import GPURunner
-from bot.runners import GitHubModelsRunner, GeminiRunner
+from bot.runners import GeminiRunner, GitHubModelsRunner, GroqRunner, OpenRouterRunner
 
 
 def parse_args() -> argparse.Namespace:
@@ -29,7 +29,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
     parser.add_argument(
         "--mode",
-        choices=["auto", "cpu", "gpu", "github", "gemini", "skip"],
+        choices=["auto", "cpu", "gpu", "github", "gemini", "openrouter", "groq", "skip"],
         default="auto",
         help="Review mode (default: auto)",
     )
@@ -50,8 +50,11 @@ def load_diff(diff_arg: str | None) -> str:
 def main() -> None:
     args = parse_args()
 
-    logger.remove()
-    logger.add(sys.stderr, level="DEBUG" if args.verbose else "INFO")
+    # Some test environments stub `loguru.logger`; guard calls to remove/add
+    if hasattr(logger, "remove"):
+        logger.remove()
+    if hasattr(logger, "add"):
+        logger.add(sys.stderr, level="DEBUG" if args.verbose else "INFO")
 
     logger.info(f"deepiri-sorge v{__import__('bot').__version__}")
 
@@ -95,6 +98,22 @@ def main() -> None:
             cache_config=cache_config,
         ).review(parsed_diff)
 
+    elif effective_mode in ("openrouter", Action.OPENROUTER.value):
+        logger.info("Running OpenRouter review")
+        review_result = OpenRouterRunner(
+            api_key=config.openrouter.api_key,
+            model=config.openrouter.model,
+            cache_config=cache_config,
+        ).review(parsed_diff)
+
+    elif effective_mode in ("groq", Action.GROQ.value):
+        logger.info("Running Groq review")
+        review_result = GroqRunner(
+            api_key=config.groq.api_key,
+            model=config.groq.model,
+            cache_config=cache_config,
+        ).review(parsed_diff)
+
     elif effective_mode in ("cpu", Action.CPU_REVIEW.value):
         logger.info("Running CPU review")
         review_result = CPUReviewer(config).review(parsed_diff)
@@ -106,6 +125,7 @@ def main() -> None:
     elif effective_mode == "skip":
         logger.info("Skipping review (--mode skip)")
         print(json.dumps({"action": "skip", "reason": "mode=skip"}))
+        return
 
     if review_result:
         logger.info(f"Review complete: {len(review_result.issues)} issues found")
