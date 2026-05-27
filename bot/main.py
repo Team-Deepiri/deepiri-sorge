@@ -13,7 +13,7 @@ from bot.cpu_reviewer import CPUReviewer
 from bot.decision_engine import Action, DecisionEngine
 from bot.diff_parser import DiffParser
 from bot.gpu_runner import GPURunner
-from bot.runners import GeminiRunner, GitHubModelsRunner, GroqRunner, OpenRouterRunner
+from bot.runners import GeminiRunner, GroqRunner, OpenRouterRunner
 
 
 def parse_args() -> argparse.Namespace:
@@ -29,7 +29,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
     parser.add_argument(
         "--mode",
-        choices=["auto", "cpu", "gpu", "github", "gemini", "openrouter", "groq", "skip"],
+        choices=["auto", "cpu", "gpu", "gemini", "openrouter", "groq", "skip"],
         default="auto",
         help="Review mode (default: auto)",
     )
@@ -50,11 +50,8 @@ def load_diff(diff_arg: str | None) -> str:
 def main() -> None:
     args = parse_args()
 
-    # Some test environments stub `loguru.logger`; guard calls to remove/add
-    if hasattr(logger, "remove"):
-        logger.remove()
-    if hasattr(logger, "add"):
-        logger.add(sys.stderr, level="DEBUG" if args.verbose else "INFO")
+    logger.remove()
+    logger.add(sys.stderr, level="DEBUG" if args.verbose else "INFO")
 
     logger.info(f"deepiri-sorge v{__import__('bot').__version__}")
 
@@ -82,15 +79,7 @@ def main() -> None:
     effective_mode = args.mode if args.mode != "auto" else decision.action.value
     cache_config = config.cache if config.cache.enabled else None
 
-    if effective_mode in ("github", Action.GITHUB_MODELS.value):
-        logger.info("Running GitHub Models review")
-        review_result = GitHubModelsRunner(
-            api_key=config.github_models.api_key,
-            model=config.github_models.model,
-            cache_config=cache_config,
-        ).review(parsed_diff)
-
-    elif effective_mode in ("gemini", Action.GEMINI.value):
+    if effective_mode in ("gemini", Action.GEMINI.value):
         logger.info("Running Gemini review")
         review_result = GeminiRunner(
             api_key=config.gemini.api_key,

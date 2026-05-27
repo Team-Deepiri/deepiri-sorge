@@ -1,4 +1,4 @@
-"""Tests for bot/runners — base cache wiring, GitHubModelsRunner, GeminiRunner."""
+"""Tests for bot/runners — base cache wiring, GeminiRunner, GroqRunner, OpenRouterRunner."""
 
 from __future__ import annotations
 
@@ -18,7 +18,6 @@ from bot.cpu_reviewer import ReviewIssue
 from bot.diff_parser import DiffParser, ParsedDiff
 from bot.runners.base import BaseRunner, ReviewResult
 from bot.runners.gemini_runner import GeminiRunner
-from bot.runners.github_models_runner import GitHubModelsRunner
 from bot.runners.groq_runner import GroqRunner
 from bot.runners.openrouter_runner import OpenRouterRunner
 from bot.utils import cache as _cache
@@ -175,63 +174,7 @@ class TestBaseRunnerCache:
         assert runner._run_review.call_count == 2
 
 
-# ---------------------------------------------------------------------------
-# GitHubModelsRunner
-# ---------------------------------------------------------------------------
 
-class TestGitHubModelsRunner:
-    def test_returns_none_without_api_key(self, sample_diff):
-        runner = GitHubModelsRunner(api_key=None)
-        runner.api_key = None
-        result = runner._run_review(sample_diff)
-        assert result is None
-
-    def test_successful_review(self, sample_diff):
-        runner = GitHubModelsRunner(api_key="fake-token")
-        with patch("requests.post", return_value=_mock_response(GITHUB_API_RESPONSE)):
-            result = runner._run_review(sample_diff)
-
-        assert result is not None
-        assert result.review_type == "github_models"
-        assert result.summary == "Added validation logic"
-        assert len(result.issues) == 1
-        assert result.issues[0].severity == "high"
-        assert result.score == 7.5
-        assert result.tokens_used == 512
-
-    def test_recommendations_passed_through(self, sample_diff):
-        runner = GitHubModelsRunner(api_key="fake-token")
-        with patch("requests.post", return_value=_mock_response(GITHUB_API_RESPONSE)):
-            result = runner._run_review(sample_diff)
-        assert "Add unit tests" in result.recommendations
-
-    def test_timeout_returns_timeout_result(self, sample_diff):
-        import requests as req
-        runner = GitHubModelsRunner(api_key="fake-token")
-        with patch("requests.post", side_effect=req.Timeout):
-            result = runner._run_review(sample_diff)
-        assert result is not None
-        assert result.score == 5.0
-        assert any("timed out" in i.message.lower() for i in result.issues)
-
-    def test_request_error_returns_none(self, sample_diff):
-        import requests as req
-        runner = GitHubModelsRunner(api_key="fake-token")
-        with patch("requests.post", side_effect=req.RequestException("connection error")):
-            result = runner._run_review(sample_diff)
-        assert result is None
-
-    def test_uses_github_token_env_var(self, monkeypatch, sample_diff):
-        monkeypatch.setenv("GITHUB_TOKEN", "env-token")
-        runner = GitHubModelsRunner()
-        assert runner.api_key == "env-token"
-
-    def test_cache_prevents_duplicate_api_call(self, sample_diff, cache_config):
-        runner = GitHubModelsRunner(api_key="fake-token", cache_config=cache_config)
-        with patch("requests.post", return_value=_mock_response(GITHUB_API_RESPONSE)) as mock_post:
-            runner.review(sample_diff)
-            runner.review(sample_diff)
-        assert mock_post.call_count == 1
 
 
 # ---------------------------------------------------------------------------

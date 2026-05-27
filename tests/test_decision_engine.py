@@ -10,7 +10,6 @@ from bot.diff_parser import ParsedDiff
 @pytest.fixture
 def config():
     cfg = Config()
-    cfg.github_models.enabled = False
     cfg.gemini.enabled = False
     cfg.groq.enabled = False
     cfg.openrouter.enabled = False

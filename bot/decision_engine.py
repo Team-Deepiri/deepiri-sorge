@@ -14,7 +14,6 @@ class Action(Enum):
     SKIP = "skip"
     CPU_REVIEW = "cpu_review"
     GPU_REVIEW = "gpu_review"
-    GITHUB_MODELS = "github_models"
     OPENROUTER = "openrouter"
     GROQ = "groq"
     GEMINI = "gemini"
@@ -113,7 +112,6 @@ class DecisionEngine:
 
         estimated_tokens = self._estimate_tokens(diff)
 
-        # New three-tier routing: small -> Groq, medium -> OpenRouter, large -> Gemini
         groq_enabled = bool(self.config.groq.enabled)
         openrouter_enabled = bool(self.config.openrouter.enabled)
         gemini_enabled = bool(self.config.gemini.enabled)

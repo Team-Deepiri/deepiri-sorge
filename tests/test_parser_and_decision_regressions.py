@@ -59,7 +59,6 @@ class TestDecisionEngineRegressions:
         )
 
         config = Config()
-        config.github_models.enabled = False
         config.gemini.enabled = False
         decision = DecisionEngine(config).decide(diff)
 
@@ -77,7 +76,6 @@ class TestDecisionEngineRegressions:
         )
 
         config = Config()
-        config.github_models.enabled = False
         config.gemini.enabled = False
         decision = DecisionEngine(config).decide(diff)
 
@@ -114,7 +112,6 @@ class TestDecisionEngineRegressions:
         )
 
         config = Config()
-        config.github_models.enabled = False
         config.gemini.enabled = False
         decision = DecisionEngine(config).decide(diff)
 
