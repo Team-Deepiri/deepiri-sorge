@@ -60,7 +60,7 @@ class OpenRouterConfig(BaseModel):
 
 class GroqConfig(BaseModel):
     enabled: bool = Field(default=False, description="Enable Groq")
-    model: str = Field(default="qwen3-32b", description="Model to use")
+    model: str = Field(default="qwen/qwen3-32b", description="Model to use")
     endpoint: str = Field(
         default="https://api.groq.com/openai/v1/chat/completions",
         description="Groq chat completions endpoint",

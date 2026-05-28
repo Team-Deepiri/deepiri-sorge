@@ -33,7 +33,7 @@ endpoint = "https://openrouter.ai/api/v1/chat/completions"
 
 [groq]
 enabled = true
-model = "qwen3-32b"
+model = "qwen/qwen3-32b"
 endpoint = "https://api.groq.com/openai/v1/chat/completions"
 
 [routing]

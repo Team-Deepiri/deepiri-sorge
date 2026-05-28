@@ -16,7 +16,7 @@ from bot.runners.base import BaseRunner, ReviewResult
 class GroqRunner(BaseRunner):
     """Runner for Groq-hosted models (currently Qwen3-32B)."""
 
-    DEFAULT_MODEL = "qwen3-32b"
+    DEFAULT_MODEL = "qwen/qwen3-32b"
     DEFAULT_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
 
     def __init__(
@@ -56,7 +56,7 @@ class GroqRunner(BaseRunner):
             "model": self.model,
             "messages": [{"role": "user", "content": self._build_prompt(diff)}],
             "temperature": 0.3,
-            "max_tokens": 4096,
+            "max_tokens": 1500,
         }
 
         logger.debug(f"Calling Groq with model: {self.model}")
