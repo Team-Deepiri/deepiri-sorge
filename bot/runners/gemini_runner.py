@@ -1,4 +1,4 @@
-"""Gemini 2.5 Pro runner - uses Google AI Studio API"""
+"""Gemini 2.5 Flash runner - uses Google AI Studio API"""
 
 import os
 import time
@@ -12,7 +12,7 @@ from bot.runners.base import BaseRunner, ReviewResult
 
 
 class GeminiRunner(BaseRunner):
-    """Runner for Gemini 2.5 Pro via Google AI Studio API"""
+    """Runner for Gemini 2.5 Flash via Google AI Studio API"""
 
     DEFAULT_MODEL = "gemini-2.5-flash"
     BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
