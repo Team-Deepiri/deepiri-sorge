@@ -16,7 +16,7 @@ from bot.runners.base import BaseRunner, ReviewResult
 class OpenRouterRunner(BaseRunner):
     """Runner for OpenRouter-hosted models (currently Qwen3-Coder)."""
 
-    DEFAULT_MODEL = "qwen3-coder"
+    DEFAULT_MODEL = "qwen/qwen3-coder:free"
     DEFAULT_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
 
     def __init__(

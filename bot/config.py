@@ -50,7 +50,7 @@ class GeminiConfig(BaseModel):
 
 class OpenRouterConfig(BaseModel):
     enabled: bool = Field(default=False, description="Enable OpenRouter")
-    model: str = Field(default="qwen3-coder", description="Model to use")
+    model: str = Field(default="qwen/qwen3-coder:free", description="Model to use")
     endpoint: str = Field(
         default="https://openrouter.ai/api/v1/chat/completions",
         description="OpenRouter chat completions endpoint",

@@ -28,7 +28,7 @@ model = "gemini-2.5-flash"
 
 [openrouter]
 enabled = true
-model = "qwen3-coder"
+model = "qwen/qwen3-coder:free"
 endpoint = "https://openrouter.ai/api/v1/chat/completions"
 
 [groq]
