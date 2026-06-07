@@ -23,8 +23,7 @@ rich = "^15.0.0"
 
 [tool.poetry.extras]
 llama = ["llama-cpp-python"]
-dev = ["pytest", "pytest-asyncio", "pytest-cov", "ruff", "mypy"]
-all = ["llama-cpp-python", "pytest", "pytest-asyncio", "pytest-cov", "ruff", "mypy"]
+all = ["llama-cpp-python"]
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=7.4.0"
