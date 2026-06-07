@@ -20,42 +20,13 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="deepiri-sorge - Distributed AI PR Review Bot"
     )
-    parser.add_argument(
-        "--diff",
-        type=str,
-        help="Path to diff file or diff content",
-    )
-    parser.add_argument(
-        "--config",
-        type=str,
-        default="sorge.toml",
-        help="Path to config file (default: sorge.toml)",
-    )
-    parser.add_argument(
-        "--pr-number",
-        type=int,
-        help="PR number for commenting",
-    )
-    parser.add_argument(
-        "--repo",
-        type=str,
-        help="Repository in format 'owner/repo'",
-    )
-    parser.add_argument(
-        "--token",
-        type=str,
-        help="GitHub token for API access",
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Don't post comments, just print output",
-    )
-    parser.add_argument(
-        "--verbose",
-        action="store_true",
-        help="Enable verbose logging",
-    )
+    parser.add_argument("--diff", type=str, help="Path to diff file or diff content")
+    parser.add_argument("--config", type=str, default="sorge.toml", help="Path to config file")
+    parser.add_argument("--pr-number", type=int, help="PR number for commenting")
+    parser.add_argument("--repo", type=str, help="Repository in format 'owner/repo'")
+    parser.add_argument("--token", type=str, help="GitHub token for API access")
+    parser.add_argument("--dry-run", action="store_true", help="Don't post comments, just print output")
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
     parser.add_argument(
         "--mode",
         choices=["auto", "cpu", "gpu", "github", "gemini", "skip"],
@@ -80,10 +51,7 @@ def main() -> None:
     args = parse_args()
 
     logger.remove()
-    if args.verbose:
-        logger.add(sys.stderr, level="DEBUG")
-    else:
-        logger.add(sys.stderr, level="INFO")
+    logger.add(sys.stderr, level="DEBUG" if args.verbose else "INFO")
 
     logger.info(f"deepiri-sorge v{__import__('bot').__version__}")
 
@@ -93,17 +61,13 @@ def main() -> None:
     diff_content = load_diff(args.diff)
     logger.info(f"Loaded diff ({len(diff_content)} bytes)")
 
-    diff_parser = DiffParser()
-    parsed_diff = diff_parser.parse(diff_content)
+    parsed_diff = DiffParser().parse(diff_content)
     logger.info(
         f"Parsed diff: {parsed_diff.files_changed} files, "
-        f"{parsed_diff.lines_added} additions, "
-        f"{parsed_diff.lines_deleted} deletions"
+        f"+{parsed_diff.lines_added} -{parsed_diff.lines_deleted}"
     )
 
-    decision_engine = DecisionEngine(config)
-    decision = decision_engine.decide(parsed_diff)
-
+    decision = DecisionEngine(config).decide(parsed_diff)
     logger.info(f"Decision: {decision.action.value} - {decision.reason}")
 
     if decision.action == Action.SKIP and args.mode == "auto":
@@ -112,34 +76,32 @@ def main() -> None:
         return
 
     review_result = None
-
     effective_mode = args.mode if args.mode != "auto" else decision.action.value
+    cache_config = config.cache if config.cache.enabled else None
 
     if effective_mode in ("github", Action.GITHUB_MODELS.value):
         logger.info("Running GitHub Models review")
-        runner = GitHubModelsRunner(
+        review_result = GitHubModelsRunner(
             api_key=config.github_models.api_key,
             model=config.github_models.model,
-        )
-        review_result = runner.review(parsed_diff)
+            cache_config=cache_config,
+        ).review(parsed_diff)
 
     elif effective_mode in ("gemini", Action.GEMINI.value):
         logger.info("Running Gemini review")
-        runner = GeminiRunner(
+        review_result = GeminiRunner(
             api_key=config.gemini.api_key,
             model=config.gemini.model,
-        )
-        review_result = runner.review(parsed_diff)
+            cache_config=cache_config,
+        ).review(parsed_diff)
 
     elif effective_mode in ("cpu", Action.CPU_REVIEW.value):
         logger.info("Running CPU review")
-        reviewer = CPUReviewer(config)
-        review_result = reviewer.review(parsed_diff)
+        review_result = CPUReviewer(config).review(parsed_diff)
 
     elif effective_mode in ("gpu", Action.GPU_REVIEW.value):
         logger.info("Running GPU review")
-        gpu_runner = GPURunner(config)
-        review_result = gpu_runner.review(parsed_diff)
+        review_result = GPURunner(config).review(parsed_diff)
 
     elif effective_mode == "skip":
         logger.info("Skipping review (--mode skip)")
@@ -149,8 +111,7 @@ def main() -> None:
         logger.info(f"Review complete: {len(review_result.issues)} issues found")
 
         if args.pr_number and args.repo and not args.dry_run:
-            poster = CommentPoster(args.token or "")
-            poster.post_review(
+            CommentPoster(args.token or "").post_review(
                 repo=args.repo,
                 pr_number=args.pr_number,
                 review=review_result,

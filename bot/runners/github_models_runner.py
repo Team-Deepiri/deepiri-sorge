@@ -6,6 +6,7 @@ import time
 import requests
 from loguru import logger
 
+from bot.config import CacheConfig
 from bot.diff_parser import ParsedDiff
 from bot.runners.base import BaseRunner, ReviewResult
 
@@ -13,14 +14,19 @@ from bot.runners.base import BaseRunner, ReviewResult
 class GitHubModelsRunner(BaseRunner):
     """Runner for GitHub Models (Azure AI Inference)"""
 
-    ENDPOINT = "https://models.inference.ai.azure.com/v1/chat/completions"
+    ENDPOINT = "https://models.inference.ai.azure.com/chat/completions"
     DEFAULT_MODEL = "gpt-4o"
 
-    def __init__(self, api_key: str | None = None, model: str | None = None):
-        super().__init__(api_key or os.getenv("GITHUB_TOKEN"))
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model: str | None = None,
+        cache_config: CacheConfig | None = None,
+    ):
+        super().__init__(api_key or os.getenv("GITHUB_TOKEN"), cache_config)
         self.model = model or self.DEFAULT_MODEL
 
-    def review(self, diff: ParsedDiff) -> ReviewResult | None:
+    def _run_review(self, diff: ParsedDiff) -> ReviewResult | None:
         if not self.api_key:
             logger.error("No GitHub token configured")
             return None
@@ -42,36 +48,22 @@ class GitHubModelsRunner(BaseRunner):
             "Authorization": f"Bearer {self.api_key}",
         }
 
-        prompt = self._build_prompt(diff)
-
         payload = {
-            "messages": [
-                {
-                    "role": "user",
-                    "content": prompt,
-                }
-            ],
+            "model": self.model,
+            "messages": [{"role": "user", "content": self._build_prompt(diff)}],
             "temperature": 0.3,
             "max_tokens": 4096,
         }
 
         logger.debug(f"Calling GitHub Models with model: {self.model}")
 
-        response = requests.post(
-            f"{self.ENDPOINT}?model={self.model}",
-            json=payload,
-            headers=headers,
-            timeout=120,
-        )
-
+        response = requests.post(self.ENDPOINT, json=payload, headers=headers, timeout=120)
         response.raise_for_status()
         latency_ms = (time.time() - start_time) * 1000
 
         data = response.json()
         content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-
-        usage = data.get("usage", {})
-        tokens_used = usage.get("total_tokens", None)
+        tokens_used = data.get("usage", {}).get("total_tokens")
 
         parsed = self._parse_response(content)
 
@@ -103,8 +95,6 @@ class GitHubModelsRunner(BaseRunner):
     def _timeout_result(self, start_time: float) -> ReviewResult:
         from bot.cpu_reviewer import ReviewIssue
 
-        latency_ms = (time.time() - start_time) * 1000
-
         return ReviewResult(
             summary="Request timed out - consider using Gemini for larger PRs",
             issues=[
@@ -115,12 +105,9 @@ class GitHubModelsRunner(BaseRunner):
                     suggestion="Large PRs may benefit from Gemini's larger context",
                 )
             ],
-            recommendations=[
-                "Split large PRs into smaller changes",
-                "Use Gemini for complex, large diffs",
-            ],
+            recommendations=["Split large PRs into smaller changes", "Use Gemini for complex, large diffs"],
             score=5.0,
-            latency_ms=latency_ms,
+            latency_ms=(time.time() - start_time) * 1000,
             model=self.model,
             tokens_used=None,
         )

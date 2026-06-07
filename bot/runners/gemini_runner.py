@@ -6,6 +6,7 @@ import time
 import requests
 from loguru import logger
 
+from bot.config import CacheConfig
 from bot.diff_parser import ParsedDiff
 from bot.runners.base import BaseRunner, ReviewResult
 
@@ -16,11 +17,16 @@ class GeminiRunner(BaseRunner):
     DEFAULT_MODEL = "gemini-2.5-flash"
     BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 
-    def __init__(self, api_key: str | None = None, model: str | None = None):
-        super().__init__(api_key or os.getenv("GOOGLE_API_KEY"))
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model: str | None = None,
+        cache_config: CacheConfig | None = None,
+    ):
+        super().__init__(api_key or os.getenv("GOOGLE_API_KEY"), cache_config)
         self.model = model or self.DEFAULT_MODEL
 
-    def review(self, diff: ParsedDiff) -> ReviewResult | None:
+    def _run_review(self, diff: ParsedDiff) -> ReviewResult | None:
         if not self.api_key:
             logger.error("No Google API key configured")
             return None
@@ -37,24 +43,10 @@ class GeminiRunner(BaseRunner):
             return None
 
     def _call_api(self, diff: ParsedDiff, start_time: float) -> ReviewResult:
-        prompt = self._build_prompt(diff)
-
         url = f"{self.BASE_URL}/{self.model}:generateContent?key={self.api_key}"
 
-        headers = {
-            "Content-Type": "application/json",
-        }
-
         payload = {
-            "contents": [
-                {
-                    "parts": [
-                        {
-                            "text": prompt,
-                        }
-                    ]
-                }
-            ],
+            "contents": [{"parts": [{"text": self._build_prompt(diff)}]}],
             "generationConfig": {
                 "temperature": 0.3,
                 "maxOutputTokens": 8192,
@@ -65,24 +57,18 @@ class GeminiRunner(BaseRunner):
 
         logger.debug(f"Calling Gemini with model: {self.model}")
 
-        response = requests.post(
-            url,
-            json=payload,
-            headers=headers,
-            timeout=180,
-        )
-
+        response = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=180)
         response.raise_for_status()
         latency_ms = (time.time() - start_time) * 1000
 
         data = response.json()
-
-        content = data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[
-            0
-        ].get("text", "")
-
-        usage = data.get("usageMetadata", {})
-        tokens_used = usage.get("totalTokenCount", None)
+        content = (
+            data.get("candidates", [{}])[0]
+            .get("content", {})
+            .get("parts", [{}])[0]
+            .get("text", "")
+        )
+        tokens_used = data.get("usageMetadata", {}).get("totalTokenCount")
 
         parsed = self._parse_response(content)
 
@@ -114,8 +100,6 @@ class GeminiRunner(BaseRunner):
     def _timeout_result(self, start_time: float) -> ReviewResult:
         from bot.cpu_reviewer import ReviewIssue
 
-        latency_ms = (time.time() - start_time) * 1000
-
         return ReviewResult(
             summary="Gemini request timed out - the diff may be too large",
             issues=[
@@ -126,12 +110,9 @@ class GeminiRunner(BaseRunner):
                     suggestion="Break large PRs into smaller, focused changes",
                 )
             ],
-            recommendations=[
-                "Split large PRs into smaller, focused changes",
-                "Review files individually for very large changes",
-            ],
+            recommendations=["Split large PRs into smaller changes", "Review files individually for very large changes"],
             score=4.0,
-            latency_ms=latency_ms,
+            latency_ms=(time.time() - start_time) * 1000,
             model=self.model,
             tokens_used=None,
         )

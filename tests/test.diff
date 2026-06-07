@@ -1,0 +1,618 @@
+diff --git a/bot/main.py b/bot/main.py
+index 81b9a36..bfda438 100644
+--- a/bot/main.py
++++ b/bot/main.py
+@@ -20,42 +20,13 @@ def parse_args() -> argparse.Namespace:
+     parser = argparse.ArgumentParser(
+         description="deepiri-sorge - Distributed AI PR Review Bot"
+     )
+-    parser.add_argument(
+-        "--diff",
+-        type=str,
+-        help="Path to diff file or diff content",
+-    )
+-    parser.add_argument(
+-        "--config",
+-        type=str,
+-        default="sorge.toml",
+-        help="Path to config file (default: sorge.toml)",
+-    )
+-    parser.add_argument(
+-        "--pr-number",
+-        type=int,
+-        help="PR number for commenting",
+-    )
+-    parser.add_argument(
+-        "--repo",
+-        type=str,
+-        help="Repository in format 'owner/repo'",
+-    )
+-    parser.add_argument(
+-        "--token",
+-        type=str,
+-        help="GitHub token for API access",
+-    )
+-    parser.add_argument(
+-        "--dry-run",
+-        action="store_true",
+-        help="Don't post comments, just print output",
+-    )
+-    parser.add_argument(
+-        "--verbose",
+-        action="store_true",
+-        help="Enable verbose logging",
+-    )
++    parser.add_argument("--diff", type=str, help="Path to diff file or diff content")
++    parser.add_argument("--config", type=str, default="sorge.toml", help="Path to config file")
++    parser.add_argument("--pr-number", type=int, help="PR number for commenting")
++    parser.add_argument("--repo", type=str, help="Repository in format 'owner/repo'")
++    parser.add_argument("--token", type=str, help="GitHub token for API access")
++    parser.add_argument("--dry-run", action="store_true", help="Don't post comments, just print output")
++    parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
+     parser.add_argument(
+         "--mode",
+         choices=["auto", "cpu", "gpu", "github", "gemini", "skip"],
+@@ -80,10 +51,7 @@ def main() -> None:
+     args = parse_args()
+ 
+     logger.remove()
+-    if args.verbose:
+-        logger.add(sys.stderr, level="DEBUG")
+-    else:
+-        logger.add(sys.stderr, level="INFO")
++    logger.add(sys.stderr, level="DEBUG" if args.verbose else "INFO")
+ 
+     logger.info(f"deepiri-sorge v{__import__('bot').__version__}")
+ 
+@@ -93,17 +61,13 @@ def main() -> None:
+     diff_content = load_diff(args.diff)
+     logger.info(f"Loaded diff ({len(diff_content)} bytes)")
+ 
+-    diff_parser = DiffParser()
+-    parsed_diff = diff_parser.parse(diff_content)
++    parsed_diff = DiffParser().parse(diff_content)
+     logger.info(
+         f"Parsed diff: {parsed_diff.files_changed} files, "
+-        f"{parsed_diff.lines_added} additions, "
+-        f"{parsed_diff.lines_deleted} deletions"
++        f"+{parsed_diff.lines_added} -{parsed_diff.lines_deleted}"
+     )
+ 
+-    decision_engine = DecisionEngine(config)
+-    decision = decision_engine.decide(parsed_diff)
+-
++    decision = DecisionEngine(config).decide(parsed_diff)
+     logger.info(f"Decision: {decision.action.value} - {decision.reason}")
+ 
+     if decision.action == Action.SKIP and args.mode == "auto":
+@@ -112,34 +76,32 @@ def main() -> None:
+         return
+ 
+     review_result = None
+-
+     effective_mode = args.mode if args.mode != "auto" else decision.action.value
++    cache_config = config.cache if config.cache.enabled else None
+ 
+     if effective_mode in ("github", Action.GITHUB_MODELS.value):
+         logger.info("Running GitHub Models review")
+-        runner = GitHubModelsRunner(
++        review_result = GitHubModelsRunner(
+             api_key=config.github_models.api_key,
+             model=config.github_models.model,
+-        )
+-        review_result = runner.review(parsed_diff)
++            cache_config=cache_config,
++        ).review(parsed_diff)
+ 
+     elif effective_mode in ("gemini", Action.GEMINI.value):
+         logger.info("Running Gemini review")
+-        runner = GeminiRunner(
++        review_result = GeminiRunner(
+             api_key=config.gemini.api_key,
+             model=config.gemini.model,
+-        )
+-        review_result = runner.review(parsed_diff)
++            cache_config=cache_config,
++        ).review(parsed_diff)
+ 
+     elif effective_mode in ("cpu", Action.CPU_REVIEW.value):
+         logger.info("Running CPU review")
+-        reviewer = CPUReviewer(config)
+-        review_result = reviewer.review(parsed_diff)
++        review_result = CPUReviewer(config).review(parsed_diff)
+ 
+     elif effective_mode in ("gpu", Action.GPU_REVIEW.value):
+         logger.info("Running GPU review")
+-        gpu_runner = GPURunner(config)
+-        review_result = gpu_runner.review(parsed_diff)
++        review_result = GPURunner(config).review(parsed_diff)
+ 
+     elif effective_mode == "skip":
+         logger.info("Skipping review (--mode skip)")
+@@ -149,8 +111,7 @@ def main() -> None:
+         logger.info(f"Review complete: {len(review_result.issues)} issues found")
+ 
+         if args.pr_number and args.repo and not args.dry_run:
+-            poster = CommentPoster(args.token or "")
+-            poster.post_review(
++            CommentPoster(args.token or "").post_review(
+                 repo=args.repo,
+                 pr_number=args.pr_number,
+                 review=review_result,
+@@ -166,4 +127,4 @@ def review() -> None:
+ 
+ 
+ if __name__ == "__main__":
+-    main()
++    main()
+\ No newline at end of file
+diff --git a/bot/runners/base.py b/bot/runners/base.py
+index 5d030bd..f8717cc 100644
+--- a/bot/runners/base.py
++++ b/bot/runners/base.py
+@@ -1,5 +1,7 @@
+ """Base runner class for model runners"""
+ 
++from __future__ import annotations
++
+ import time
+ from abc import ABC, abstractmethod
+ from dataclasses import dataclass
+@@ -42,18 +44,41 @@ class ReviewResult:
+ 
+ 
+ class BaseRunner(ABC):
+-    """Abstract base class for model runners"""
++    """Abstract base class for model runners, with optional caching."""
+ 
+-    def __init__(self, api_key: str | None = None):
++    def __init__(self, api_key: str | None = None, cache_config=None):
+         self.api_key = api_key
++        self._cache_config = cache_config  # bot.config.CacheConfig or None
++
++    # ------------------------------------------------------------------
++    # Public entry point — handles cache read/write around _call_api
++    # ------------------------------------------------------------------
+ 
+-    @abstractmethod
+     def review(self, diff: ParsedDiff) -> ReviewResult | None:
+-        """Run review on the diff"""
++        if self._cache_config and self._cache_config.enabled:
++            from bot.utils import cache as _cache
++            cached = _cache.get(diff.raw, self.model, self._cache_config.ttl_hours)
++            if cached is not None:
++                return self._result_from_dict(cached)
++
++        result = self._run_review(diff)
++
++        if result is not None and self._cache_config and self._cache_config.enabled:
++            from bot.utils import cache as _cache
++            _cache.set(diff.raw, self.model, result.to_dict())
++
++        return result
++
++    @abstractmethod
++    def _run_review(self, diff: ParsedDiff) -> ReviewResult | None:
++        """Subclasses implement the actual API call here."""
+         pass
+ 
++    # ------------------------------------------------------------------
++    # Shared helpers
++    # ------------------------------------------------------------------
++
+     def _build_prompt(self, diff: ParsedDiff) -> str:
+-        """Build the review prompt from diff"""
+         return f"""You are an expert code reviewer. Analyze the following code diff and provide a detailed review.
+ 
+ Provide your response in JSON format with the following structure:
+@@ -80,7 +105,6 @@ Files changed: {", ".join(diff.files)}
+ Total lines: +{diff.lines_added} -{diff.lines_deleted}"""
+ 
+     def _parse_response(self, response_text: str) -> dict:
+-        """Parse JSON response from model"""
+         import json
+         import re
+ 
+@@ -96,4 +120,30 @@ Total lines: +{diff.lines_added} -{diff.lines_deleted}"""
+             "issues": [],
+             "recommendations": [response_text[:500]],
+             "score": 5.0,
+-        }
+\ No newline at end of file
++        }
++
++    def _result_from_dict(self, data: dict) -> ReviewResult:
++        """Reconstruct a ReviewResult from a cached to_dict() payload."""
++        from bot.cpu_reviewer import ReviewIssue
++
++        issues = [
++            ReviewIssue(
++                severity=i.get("severity", "medium"),
++                file=i.get("file"),
++                line=i.get("line"),
++                message=i.get("message", ""),
++                rule=i.get("rule"),
++                suggestion=i.get("suggestion"),
++            )
++            for i in data.get("issues", [])
++        ]
++        return ReviewResult(
++            summary=data.get("summary", ""),
++            issues=issues,
++            recommendations=data.get("recommendations", []),
++            score=data.get("score", 7.0),
++            latency_ms=data.get("latency_ms", 0.0),
++            model=data.get("model", self.model),
++            tokens_used=data.get("tokens_used"),
++            review_type=data.get("review_type", "api"),
++        )
+\ No newline at end of file
+diff --git a/bot/runners/gemini_runner.py b/bot/runners/gemini_runner.py
+index fcbcec3..65e8b69 100644
+--- a/bot/runners/gemini_runner.py
++++ b/bot/runners/gemini_runner.py
+@@ -6,6 +6,7 @@ import time
+ import requests
+ from loguru import logger
+ 
++from bot.config import CacheConfig
+ from bot.diff_parser import ParsedDiff
+ from bot.runners.base import BaseRunner, ReviewResult
+ 
+@@ -16,11 +17,16 @@ class GeminiRunner(BaseRunner):
+     DEFAULT_MODEL = "gemini-2.5-flash"
+     BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
+ 
+-    def __init__(self, api_key: str | None = None, model: str | None = None):
+-        super().__init__(api_key or os.getenv("GOOGLE_API_KEY"))
++    def __init__(
++        self,
++        api_key: str | None = None,
++        model: str | None = None,
++        cache_config: CacheConfig | None = None,
++    ):
++        super().__init__(api_key or os.getenv("GOOGLE_API_KEY"), cache_config)
+         self.model = model or self.DEFAULT_MODEL
+ 
+-    def review(self, diff: ParsedDiff) -> ReviewResult | None:
++    def _run_review(self, diff: ParsedDiff) -> ReviewResult | None:
+         if not self.api_key:
+             logger.error("No Google API key configured")
+             return None
+@@ -37,24 +43,10 @@ class GeminiRunner(BaseRunner):
+             return None
+ 
+     def _call_api(self, diff: ParsedDiff, start_time: float) -> ReviewResult:
+-        prompt = self._build_prompt(diff)
+-
+         url = f"{self.BASE_URL}/{self.model}:generateContent?key={self.api_key}"
+ 
+-        headers = {
+-            "Content-Type": "application/json",
+-        }
+-
+         payload = {
+-            "contents": [
+-                {
+-                    "parts": [
+-                        {
+-                            "text": prompt,
+-                        }
+-                    ]
+-                }
+-            ],
++            "contents": [{"parts": [{"text": self._build_prompt(diff)}]}],
+             "generationConfig": {
+                 "temperature": 0.3,
+                 "maxOutputTokens": 8192,
+@@ -65,24 +57,18 @@ class GeminiRunner(BaseRunner):
+ 
+         logger.debug(f"Calling Gemini with model: {self.model}")
+ 
+-        response = requests.post(
+-            url,
+-            json=payload,
+-            headers=headers,
+-            timeout=180,
+-        )
+-
++        response = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=180)
+         response.raise_for_status()
+         latency_ms = (time.time() - start_time) * 1000
+ 
+         data = response.json()
+-
+-        content = data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[
+-            0
+-        ].get("text", "")
+-
+-        usage = data.get("usageMetadata", {})
+-        tokens_used = usage.get("totalTokenCount", None)
++        content = (
++            data.get("candidates", [{}])[0]
++            .get("content", {})
++            .get("parts", [{}])[0]
++            .get("text", "")
++        )
++        tokens_used = data.get("usageMetadata", {}).get("totalTokenCount")
+ 
+         parsed = self._parse_response(content)
+ 
+@@ -114,8 +100,6 @@ class GeminiRunner(BaseRunner):
+     def _timeout_result(self, start_time: float) -> ReviewResult:
+         from bot.cpu_reviewer import ReviewIssue
+ 
+-        latency_ms = (time.time() - start_time) * 1000
+-
+         return ReviewResult(
+             summary="Gemini request timed out - the diff may be too large",
+             issues=[
+@@ -126,12 +110,9 @@ class GeminiRunner(BaseRunner):
+                     suggestion="Break large PRs into smaller, focused changes",
+                 )
+             ],
+-            recommendations=[
+-                "Split large PRs into smaller, focused changes",
+-                "Review files individually for very large changes",
+-            ],
++            recommendations=["Split large PRs into smaller changes", "Review files individually for very large changes"],
+             score=4.0,
+-            latency_ms=latency_ms,
++            latency_ms=(time.time() - start_time) * 1000,
+             model=self.model,
+             tokens_used=None,
+         )
+\ No newline at end of file
+diff --git a/bot/runners/github_models_runner.py b/bot/runners/github_models_runner.py
+index 2ec7665..54e83fe 100644
+--- a/bot/runners/github_models_runner.py
++++ b/bot/runners/github_models_runner.py
+@@ -6,6 +6,7 @@ import time
+ import requests
+ from loguru import logger
+ 
++from bot.config import CacheConfig
+ from bot.diff_parser import ParsedDiff
+ from bot.runners.base import BaseRunner, ReviewResult
+ 
+@@ -13,14 +14,19 @@ from bot.runners.base import BaseRunner, ReviewResult
+ class GitHubModelsRunner(BaseRunner):
+     """Runner for GitHub Models (Azure AI Inference)"""
+ 
+-    ENDPOINT = "https://models.inference.ai.azure.com/v1/chat/completions"
++    ENDPOINT = "https://models.inference.ai.azure.com/chat/completions"
+     DEFAULT_MODEL = "gpt-4o"
+ 
+-    def __init__(self, api_key: str | None = None, model: str | None = None):
+-        super().__init__(api_key or os.getenv("GITHUB_TOKEN"))
++    def __init__(
++        self,
++        api_key: str | None = None,
++        model: str | None = None,
++        cache_config: CacheConfig | None = None,
++    ):
++        super().__init__(api_key or os.getenv("GITHUB_TOKEN"), cache_config)
+         self.model = model or self.DEFAULT_MODEL
+ 
+-    def review(self, diff: ParsedDiff) -> ReviewResult | None:
++    def _run_review(self, diff: ParsedDiff) -> ReviewResult | None:
+         if not self.api_key:
+             logger.error("No GitHub token configured")
+             return None
+@@ -42,36 +48,22 @@ class GitHubModelsRunner(BaseRunner):
+             "Authorization": f"Bearer {self.api_key}",
+         }
+ 
+-        prompt = self._build_prompt(diff)
+-
+         payload = {
+-            "messages": [
+-                {
+-                    "role": "user",
+-                    "content": prompt,
+-                }
+-            ],
++            "model": self.model,
++            "messages": [{"role": "user", "content": self._build_prompt(diff)}],
+             "temperature": 0.3,
+             "max_tokens": 4096,
+         }
+ 
+         logger.debug(f"Calling GitHub Models with model: {self.model}")
+ 
+-        response = requests.post(
+-            f"{self.ENDPOINT}?model={self.model}",
+-            json=payload,
+-            headers=headers,
+-            timeout=120,
+-        )
+-
++        response = requests.post(self.ENDPOINT, json=payload, headers=headers, timeout=120)
+         response.raise_for_status()
+         latency_ms = (time.time() - start_time) * 1000
+ 
+         data = response.json()
+         content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+-
+-        usage = data.get("usage", {})
+-        tokens_used = usage.get("total_tokens", None)
++        tokens_used = data.get("usage", {}).get("total_tokens")
+ 
+         parsed = self._parse_response(content)
+ 
+@@ -103,8 +95,6 @@ class GitHubModelsRunner(BaseRunner):
+     def _timeout_result(self, start_time: float) -> ReviewResult:
+         from bot.cpu_reviewer import ReviewIssue
+ 
+-        latency_ms = (time.time() - start_time) * 1000
+-
+         return ReviewResult(
+             summary="Request timed out - consider using Gemini for larger PRs",
+             issues=[
+@@ -115,12 +105,9 @@ class GitHubModelsRunner(BaseRunner):
+                     suggestion="Large PRs may benefit from Gemini's larger context",
+                 )
+             ],
+-            recommendations=[
+-                "Split large PRs into smaller changes",
+-                "Use Gemini for complex, large diffs",
+-            ],
++            recommendations=["Split large PRs into smaller changes", "Use Gemini for complex, large diffs"],
+             score=5.0,
+-            latency_ms=latency_ms,
++            latency_ms=(time.time() - start_time) * 1000,
+             model=self.model,
+             tokens_used=None,
+         )
+\ No newline at end of file
+diff --git a/docs/SETUP.md b/docs/SETUP.md
+index 6c29c3b..da97581 100644
+--- a/docs/SETUP.md
++++ b/docs/SETUP.md
+@@ -44,7 +44,7 @@ This is for testing the bot locally before deploying.
+ 2. Create new token:
+    - **Name**: Sorge Dev
+    - **Repository access**: Select your test repo(s)
+-   - **Permissions**: Add "Models" → "Read and write"
++   - **Permissions**: Add "Models" → "Read-only"
+ 3. Copy the token
+ 
+ **Gemini API Key:**
+@@ -79,6 +79,21 @@ Optional flags:
+ - `--token "$GITHUB_TOKEN"` - Your GitHub token (for posting comments)
+ - `--dry-run` - Don't post comments, just print output
+ 
++### Environment setup
++
++1. Install Poetry (if you haven't)
++```bash
++# After installing, add to your PATH
++curl -sSL https://install.python-poetry.org | python3 -
++```
++
++2. Install dependencies
++```bash
++# from pyproject.toml via poetry
++poetry install
++```
++This creates a virtual environment and installs all dependencies
++
+ ---
+ 
+ ## Model Limits
+diff --git a/pyproject.toml b/pyproject.toml
+deleted file mode 100644
+index a528cba..0000000
+--- a/pyproject.toml
++++ /dev/null
+@@ -1,64 +0,0 @@
+-[tool.poetry]
+-name = "deepiri-sorge"
+-version = "0.1.0"
+-description = "Distributed, event-driven AI PR review bot - runs on GitHub Actions"
+-readme = "README.md"
+-license = "Apache-2.0"
+-authors = ["Deepiri <dev@deepiri.dev>"]
+-keywords = ["ai", "code-review", "github-actions", "llm", "github-bot"]
+-
+-[tool.poetry.dependencies]
+-python = "^3.10"
+-requests = ">=2.31.0"
+-PyYAML = ">=6.0.1"
+-toml = ">=0.10.2"
+-loguru = ">=0.7.2"
+-ghapi = ">=1.0.4"
+-pydantic = ">=2.5.0"
+-numpy = ">=1.24.0"
+-scikit-learn = ">=1.3.0"
+-python-dotenv = ">=1.0.0"
+-llama-cpp-python = { version = ">=0.2.0", optional = true }
+-rich = "^15.0.0"
+-
+-[tool.poetry.extras]
+-llama = ["llama-cpp-python"]
+-dev = ["pytest", "pytest-asyncio", "pytest-cov", "ruff", "mypy"]
+-all = ["llama-cpp-python", "pytest", "pytest-asyncio", "pytest-cov", "ruff", "mypy"]
+-
+-[tool.poetry.group.dev.dependencies]
+-pytest = ">=7.4.0"
+-pytest-asyncio = ">=0.21.0"
+-pytest-cov = ">=4.1.0"
+-ruff = ">=0.1.0"
+-mypy = ">=1.7.0"
+-
+-[tool.poetry.scripts]
+-sorge = "bot.main:main"
+-sorge-review = "bot.main:review"
+-sorge-monitor = "bot.tui:main"
+-
+-[[tool.poetry.packages]]
+-include = "bot"
+-
+-[build-system]
+-requires = ["poetry-core"]
+-build-backend = "poetry.core.masonry.api"
+-
+-[tool.ruff]
+-line-length = 100
+-target-version = "py310"
+-
+-[tool.ruff.lint]
+-select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "DTZ", "T10", "ISC"]
+-ignore = ["E501"]
+-
+-[tool.mypy]
+-python_version = "3.10"
+-warn_return_any = true
+-warn_unused_configs = true
+-disallow_untyped_defs = true
+-
+-[tool.pytest.ini_options]
+-testpaths = ["tests"]
+-asyncio_mode = "auto"
+diff --git a/sorge.toml b/sorge.toml
+deleted file mode 100644
+index 1556e0f..0000000
+--- a/sorge.toml
++++ /dev/null
+@@ -1,39 +0,0 @@
+-# Sorge configuration
+-
+-[sorge]
+-enabled = true
+-
+-[filters]
+-min_lines = 20
+-skip_docs = true
+-skip_deps = true
+-skip_tests = false
+-max_cpu_lines = 500
+-
+-[review]
+-style = "concise"
+-include_security = true
+-include_performance = true
+-include_style = true
+-
+-[gpu]
+-enabled = false
+-
+-[model]
+-name = "codellama-7b-q4"
+-
+-[github_models]
+-enabled = true
+-model = "gpt-4o"
+-
+-[gemini]
+-enabled = true
+-model = "gemini-2.5-flash"
+-
+-[routing]
+-small_pr_threshold = 10000
+-large_pr_threshold = 25000
+-
+-[cache]
+-enabled = true
+-ttl_hours = 24
+\ No newline at end of file
