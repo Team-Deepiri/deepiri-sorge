@@ -44,7 +44,7 @@ This is for testing the bot locally before deploying.
 2. Create new token:
    - **Name**: Sorge Dev
    - **Repository access**: Select your test repo(s)
-   - **Permissions**: Add "Models" → "Read and write"
+   - **Permissions**: Add "Models" → "Read-only"
 3. Copy the token
 
 **Gemini API Key:**
@@ -78,6 +78,21 @@ Optional flags:
 - `--repo "owner/repo"` - Repo for commenting
 - `--token "$GITHUB_TOKEN"` - Your GitHub token (for posting comments)
 - `--dry-run` - Don't post comments, just print output
+
+### Environment setup
+
+1. Install Poetry (if you haven't)
+```bash
+# After installing, add to your PATH
+curl -sSL https://install.python-poetry.org | python3 -
+```
+
+2. Install dependencies
+```bash
+# from pyproject.toml via poetry
+poetry install
+```
+This creates a virtual environment and installs all dependencies
 
 ---
 
