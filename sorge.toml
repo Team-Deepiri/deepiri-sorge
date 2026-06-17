@@ -28,7 +28,7 @@ model = "gemini-2.5-flash"
 
 [openrouter]
 enabled = true
-model = "qwen/qwen3-coder:free"
+model = "google/gemma-4-31b-it:free"
 endpoint = "https://openrouter.ai/api/v1/chat/completions"
 
 [groq]
@@ -38,8 +38,8 @@ endpoint = "https://api.groq.com/openai/v1/chat/completions"
 
 [routing]
 small_pr_threshold = 4500
-medium_pr_threshold = 30000
-large_pr_threshold = 30000
+medium_pr_threshold = 50000
+large_pr_threshold = 50000
 
 [cache]
 enabled = true
