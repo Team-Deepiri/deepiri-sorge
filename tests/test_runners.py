@@ -131,6 +131,10 @@ class ConcreteRunner(BaseRunner):
     model = "test-model"
     call_count = 0
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.call_count = 0
+
     def _run_review(self, diff: ParsedDiff) -> ReviewResult | None:
         self.call_count += 1
         return ReviewResult(

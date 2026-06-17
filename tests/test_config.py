@@ -1,7 +1,7 @@
 """Tests for config management"""
 
 
-from bot.config import Config, FiltersConfig, GPUConfig, GroqConfig, ModelConfig, OpenRouterConfig
+from bot.config import Config, FiltersConfig, GeminiConfig, GPUConfig, GroqConfig, ModelConfig, OpenRouterConfig
 
 
 class TestConfig:
@@ -12,11 +12,13 @@ class TestConfig:
         assert config.filters.min_lines == 20
         assert config.filters.max_cpu_lines == 500
         assert config.gpu.enabled is False
+        assert config.gemini.enabled is True
+        assert config.gemini.model == "gemini-2.5-flash"
         assert config.openrouter.enabled is False
-        assert config.openrouter.model == "qwen3-coder"
+        assert config.openrouter.model == "google/gemma-4-31b-it:free"
         assert config.openrouter.endpoint == "https://openrouter.ai/api/v1/chat/completions"
         assert config.groq.enabled is False
-        assert config.groq.model == "qwen3-32b"
+        assert config.groq.model == "qwen/qwen3-32b"
         assert config.groq.endpoint == "https://api.groq.com/openai/v1/chat/completions"
 
     def test_filters_defaults(self):
@@ -39,7 +41,7 @@ class TestConfig:
         openrouter = OpenRouterConfig()
 
         assert openrouter.enabled is False
-        assert openrouter.model == "qwen3-coder"
+        assert openrouter.model == "google/gemma-4-31b-it:free"
         assert openrouter.endpoint == "https://openrouter.ai/api/v1/chat/completions"
         assert openrouter.api_key is None
 
@@ -47,9 +49,16 @@ class TestConfig:
         groq = GroqConfig()
 
         assert groq.enabled is False
-        assert groq.model == "qwen3-32b"
+        assert groq.model == "qwen/qwen3-32b"
         assert groq.endpoint == "https://api.groq.com/openai/v1/chat/completions"
         assert groq.api_key is None
+
+    def test_gemini_defaults(self):
+        gemini = GeminiConfig()
+
+        assert gemini.enabled is True
+        assert gemini.model == "gemini-2.5-flash"
+        assert gemini.api_key is None
 
     def test_model_defaults(self):
         model = ModelConfig()
@@ -67,6 +76,7 @@ class TestConfig:
         assert "gpu" in data
         assert "model" in data
         assert "review" in data
+        assert "gemini" in data
         assert "openrouter" in data
         assert "groq" in data
 
@@ -86,3 +96,18 @@ class TestConfigOverrides:
         config = Config(model=ModelConfig(name="codellama-13b"))
 
         assert config.model.name == "codellama-13b"
+
+    def test_custom_gemini_model(self):
+        config = Config(gemini=GeminiConfig(model="gemini-1.5-pro"))
+
+        assert config.gemini.model == "gemini-1.5-pro"
+
+    def test_custom_gemini_enabled(self):
+        config = Config(gemini=GeminiConfig(enabled=False))
+
+        assert config.gemini.enabled is False
+
+    def test_custom_openrouter_model(self):
+        config = Config(openrouter=OpenRouterConfig(model="meta-llama/llama-3-70b-instruct"))
+
+        assert config.openrouter.model == "meta-llama/llama-3-70b-instruct"
