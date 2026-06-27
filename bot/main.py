@@ -118,7 +118,8 @@ def main() -> None:
 
         print(json.dumps(review_result.to_dict(), indent=2))
     else:
-        logger.warning("No review result generated")
+        logger.error("No review result generated")
+        sys.exit(2)
 
 
 def review() -> None:
