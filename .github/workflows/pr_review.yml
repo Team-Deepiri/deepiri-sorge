@@ -3,6 +3,9 @@ name: AI PR Review
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+    branches: [main, dev]
+  push:
+    branches: [main, dev]
   workflow_dispatch:
     inputs:
       pr_number:
