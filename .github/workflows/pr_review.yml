@@ -129,13 +129,24 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          curl -s -X POST \
+          COMMENTS_JSON=$(curl -fsSL \
             -H "Authorization: Bearer $GITHUB_TOKEN" \
             -H "Accept: application/vnd.github.v3+json" \
-            https://api.github.com/repos/${{ steps.pr_info.outputs.REPO }}/issues/${{ steps.pr_info.outputs.PR_NUMBER }}/comments \
-            -d '{
-              "body": "## AI Code Review - Skipped\n\nThis PR was automatically analyzed and determined to not require AI review.\n\n*This is an automated comment by [deepiri-sorge](https://github.com/deepiri/deepiri-sorge).*"
-            }'
+            https://api.github.com/repos/${{ steps.pr_info.outputs.REPO }}/issues/${{ steps.pr_info.outputs.PR_NUMBER }}/comments)
+
+          HAS_SKIP=$(echo "$COMMENTS_JSON" | python -c "import json,sys; comments=json.load(sys.stdin); print('true' if any('AI Code Review - Skipped' in (c.get('body') or '') and 'deepiri-sorge' in (c.get('body') or '') for c in comments) else 'false')")
+
+          if [ "$HAS_SKIP" = "true" ]; then
+            echo "Skip comment already exists, not posting duplicate."
+          else
+            curl -fsSL -X POST \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github.v3+json" \
+              https://api.github.com/repos/${{ steps.pr_info.outputs.REPO }}/issues/${{ steps.pr_info.outputs.PR_NUMBER }}/comments \
+              -d '{
+                "body": "## AI Code Review - Skipped\n\nThis PR was automatically analyzed and determined to not require AI review.\n\n*This is an automated comment by [deepiri-sorge](https://github.com/deepiri/deepiri-sorge).*"
+              }' >/dev/null
+          fi
       
       - name: Upload review results
         uses: actions/upload-artifact@v4
