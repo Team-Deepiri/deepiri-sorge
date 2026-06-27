@@ -10,6 +10,16 @@ from bot.diff_parser import ParsedDiff
 
 
 @dataclass
+class ReviewIssue:
+    severity: str
+    file: str | None = None
+    line: int | None = None
+    message: str = ""
+    rule: str | None = None
+    suggestion: str | None = None
+
+
+@dataclass
 class ReviewResult:
     summary: str
     issues: list
@@ -124,8 +134,6 @@ Total lines: +{diff.lines_added} -{diff.lines_deleted}"""
 
     def _result_from_dict(self, data: dict) -> ReviewResult:
         """Reconstruct a ReviewResult from a cached to_dict() payload."""
-        from bot.cpu_reviewer import ReviewIssue
-
         issues = [
             ReviewIssue(
                 severity=i.get("severity", "medium"),

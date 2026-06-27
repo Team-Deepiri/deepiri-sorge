@@ -7,7 +7,7 @@ from tests.helpers import install_loguru_stub
 install_loguru_stub()
 
 from bot.comment_poster import CommentPoster
-from bot.cpu_reviewer import ReviewIssue, ReviewResult
+from bot.runners.base import ReviewIssue, ReviewResult
 from bot.utils.formatting import (
     chunk_text,
     clean_multiline_text,

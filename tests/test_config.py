@@ -1,7 +1,7 @@
 """Tests for config management"""
 
 
-from bot.config import Config, FiltersConfig, GeminiConfig, GPUConfig, GroqConfig, ModelConfig, OpenRouterConfig
+from bot.config import Config, FiltersConfig, GeminiConfig, GroqConfig, OpenRouterConfig
 
 
 class TestConfig:
@@ -10,8 +10,6 @@ class TestConfig:
 
         assert config.sorge.get("enabled", True) is True
         assert config.filters.min_lines == 20
-        assert config.filters.max_cpu_lines == 500
-        assert config.gpu.enabled is False
         assert config.gemini.enabled is True
         assert config.gemini.model == "gemini-2.5-flash"
         assert config.openrouter.enabled is False
@@ -30,12 +28,7 @@ class TestConfig:
         assert filters.skip_tests is False
 
     def test_gpu_defaults(self):
-        gpu = GPUConfig()
-
-        assert gpu.enabled is False
-        assert gpu.threshold_lines == 1000
-        assert gpu.endpoint == ""
-        assert gpu.timeout == 60
+        pass  # GPUConfig removed — GPU inference replaced by API-based runners
 
     def test_openrouter_defaults(self):
         openrouter = OpenRouterConfig()
@@ -61,11 +54,7 @@ class TestConfig:
         assert gemini.api_key is None
 
     def test_model_defaults(self):
-        model = ModelConfig()
-
-        assert model.name == "llama-7b-q4"
-        assert model.context_size == 4096
-        assert model.threads == 4
+        pass  # ModelConfig removed — local model inference removed
 
     def test_config_to_dict(self):
         config = Config()
@@ -73,8 +62,6 @@ class TestConfig:
         data = config.to_dict()
 
         assert "filters" in data
-        assert "gpu" in data
-        assert "model" in data
         assert "review" in data
         assert "gemini" in data
         assert "openrouter" in data
@@ -88,14 +75,10 @@ class TestConfigOverrides:
         assert config.filters.min_lines == 50
 
     def test_custom_gpu_enabled(self):
-        config = Config(gpu=GPUConfig(enabled=True))
-
-        assert config.gpu.enabled is True
+        pass  # GPUConfig removed
 
     def test_custom_model_name(self):
-        config = Config(model=ModelConfig(name="codellama-13b"))
-
-        assert config.model.name == "codellama-13b"
+        pass  # ModelConfig removed
 
     def test_custom_gemini_model(self):
         config = Config(gemini=GeminiConfig(model="gemini-1.5-pro"))

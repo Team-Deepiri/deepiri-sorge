@@ -3,7 +3,7 @@
 import json
 from argparse import Namespace
 
-from bot.cpu_reviewer import ReviewResult
+from bot.runners.base import ReviewResult
 from bot.decision_engine import Action, ReviewDecision
 from bot.diff_parser import ParsedDiff
 from bot.main import main, parse_args
@@ -78,7 +78,7 @@ def test_main_dispatches_openrouter_for_explicit_mode(monkeypatch, capsys):
     monkeypatch.setattr("bot.main.DiffParser.parse", lambda self, _: _sample_diff())
     monkeypatch.setattr(
         "bot.main.DecisionEngine.decide",
-        lambda self, _: ReviewDecision(action=Action.CPU_REVIEW, reason="test"),
+        lambda self, _: ReviewDecision(action=Action.GROQ, reason="test"),
     )
 
     main()

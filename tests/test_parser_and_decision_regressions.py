@@ -59,10 +59,11 @@ class TestDecisionEngineRegressions:
         )
 
         config = Config()
+        config.groq.enabled = True
         config.gemini.enabled = False
         decision = DecisionEngine(config).decide(diff)
 
-        assert decision.action == Action.CPU_REVIEW
+        assert decision.action == Action.GROQ
         assert decision.skip_category is None
 
     def test_mixed_dependency_and_code_diff_is_not_skipped_as_deps_only(self):
@@ -76,10 +77,11 @@ class TestDecisionEngineRegressions:
         )
 
         config = Config()
+        config.groq.enabled = True
         config.gemini.enabled = False
         decision = DecisionEngine(config).decide(diff)
 
-        assert decision.action == Action.CPU_REVIEW
+        assert decision.action == Action.GROQ
         assert decision.skip_category is None
 
     def test_tests_only_diff_is_skipped_when_test_skipping_is_enabled(self):

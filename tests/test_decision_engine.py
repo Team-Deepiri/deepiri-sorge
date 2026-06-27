@@ -125,24 +125,17 @@ class TestDecisionEngine:
         assert decision.action == Action.SKIP
         assert decision.skip_category == "deps"
 
-    def test_medium_diff_cpu(self, engine, medium_diff):
+    def test_medium_diff_no_provider(self, engine, medium_diff):
         decision = engine.decide(medium_diff)
 
-        assert decision.action == Action.CPU_REVIEW
+        assert decision.action == Action.SKIP
+        assert decision.skip_category == "no_provider"
 
-    def test_large_diff_gpu_when_enabled(self, engine, large_diff):
-        engine.config.gpu.enabled = True
-
+    def test_large_diff_no_provider(self, engine, large_diff):
         decision = engine.decide(large_diff)
 
-        assert decision.action == Action.GPU_REVIEW
-
-    def test_large_diff_cpu_when_gpu_disabled(self, engine, large_diff):
-        engine.config.gpu.enabled = False
-
-        decision = engine.decide(large_diff)
-
-        assert decision.action == Action.CPU_REVIEW
+        assert decision.action == Action.SKIP
+        assert decision.skip_category == "no_provider"
 
     def test_routing_prefers_groq_for_small_tokens(self, engine, medium_diff):
         engine.config.groq.enabled = True

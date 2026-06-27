@@ -71,7 +71,7 @@ class GroqRunner(BaseRunner):
 
         parsed = self._parse_response(content)
 
-        from bot.cpu_reviewer import ReviewIssue
+        from bot.runners.base import ReviewIssue
 
         issues = [
             ReviewIssue(
@@ -97,7 +97,7 @@ class GroqRunner(BaseRunner):
         )
 
     def _timeout_result(self, start_time: float) -> ReviewResult:
-        from bot.cpu_reviewer import ReviewIssue
+        from bot.runners.base import ReviewIssue
 
         return ReviewResult(
             summary="Groq request timed out - consider using a smaller diff",

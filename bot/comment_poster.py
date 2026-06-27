@@ -3,7 +3,7 @@
 import requests
 from loguru import logger
 
-from bot.cpu_reviewer import ReviewResult
+from bot.runners.base import ReviewResult
 from bot.utils.formatting import (
     clean_multiline_text,
     format_blockquote,

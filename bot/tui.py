@@ -57,8 +57,6 @@ def render_header(config: Config) -> Panel:
     backends = []
     if config.gemini.enabled:
         backends.append(f"[magenta]Gemini[/magenta] ({config.gemini.model})")
-    if config.gpu.enabled:
-        backends.append("[yellow]GPU[/yellow]")
 
     routing = (
         f"Small ≤{config.routing.small_pr_threshold:,} tokens → Groq  |  "
@@ -85,8 +83,6 @@ def render_decision_table(decision, diff, estimated_tokens: int) -> Panel:
 
     action_colors = {
         Action.GEMINI: "magenta",
-        Action.CPU_REVIEW: "yellow",
-        Action.GPU_REVIEW: "green",
         Action.SKIP: "dim",
     }
     color = action_colors.get(decision.action, "white")
@@ -221,8 +217,7 @@ def run_tui(diff_content: str, config: Config, dry_run: bool = False) -> None:
     ) as progress:
         action_label = {
             Action.GEMINI: f"Calling Gemini ({config.gemini.model})",
-            Action.CPU_REVIEW: "Running CPU review",
-            Action.GPU_REVIEW: "Running GPU review",
+
         }.get(decision.action, "Reviewing…")
 
         task = progress.add_task(action_label, total=None)
@@ -265,16 +260,6 @@ def run_tui(diff_content: str, config: Config, dry_run: bool = False) -> None:
         elif decision.action == Action.GROQ:
             _try_groq()
 
-        elif decision.action == Action.CPU_REVIEW:
-            from bot.cpu_reviewer import CPUReviewer
-            reviewer = CPUReviewer(config)
-            result = reviewer.review(parsed_diff)
-
-        elif decision.action == Action.GPU_REVIEW:
-            from bot.gpu_runner import GPURunner
-            runner = GPURunner(config)
-            result = runner.review(parsed_diff)
-
         progress.remove_task(task)
 
     if result is None:
@@ -300,7 +285,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="deepiri-sorge TUI monitor")
     parser.add_argument("--diff", required=True, help="Path to diff file or raw diff content")
     parser.add_argument("--config", default="sorge.toml", help="Path to config file")
-    parser.add_argument("--mode", choices=["auto", "gemini", "cpu", "gpu"], default="auto")
+    parser.add_argument("--mode", choices=["auto", "gemini", "openrouter", "groq"], default="auto")
     parser.add_argument("--dry-run", action="store_true", help="Skip JSON stdout output")
     return parser.parse_args()
 
@@ -316,15 +301,12 @@ def main() -> None:
     if args.mode == "gemini":
         config.openrouter.enabled = False
         config.groq.enabled = False
-    elif args.mode == "cpu":
-        config.openrouter.enabled = False
-        config.groq.enabled = False
+    elif args.mode == "openrouter":
         config.gemini.enabled = False
-    elif args.mode == "gpu":
-        config.openrouter.enabled = False
         config.groq.enabled = False
+    elif args.mode == "groq":
         config.gemini.enabled = False
-        config.gpu.enabled = True
+        config.openrouter.enabled = False
 
     diff_arg = args.diff
     path = Path(diff_arg)

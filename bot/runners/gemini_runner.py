@@ -72,7 +72,7 @@ class GeminiRunner(BaseRunner):
 
         parsed = self._parse_response(content)
 
-        from bot.cpu_reviewer import ReviewIssue
+        from bot.runners.base import ReviewIssue
 
         issues = [
             ReviewIssue(
@@ -98,7 +98,7 @@ class GeminiRunner(BaseRunner):
         )
 
     def _timeout_result(self, start_time: float) -> ReviewResult:
-        from bot.cpu_reviewer import ReviewIssue
+        from bot.runners.base import ReviewIssue
 
         return ReviewResult(
             summary="Gemini request timed out - the diff may be too large",

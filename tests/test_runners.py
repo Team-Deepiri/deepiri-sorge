@@ -14,7 +14,7 @@ from tests.helpers import install_loguru_stub
 install_loguru_stub()
 
 from bot.config import CacheConfig
-from bot.cpu_reviewer import ReviewIssue
+from bot.runners.base import ReviewIssue
 from bot.diff_parser import DiffParser, ParsedDiff
 from bot.runners.base import BaseRunner, ReviewResult
 from bot.runners.gemini_runner import GeminiRunner

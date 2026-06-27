@@ -9,10 +9,8 @@ from loguru import logger
 
 from bot.comment_poster import CommentPoster
 from bot.config import Config
-from bot.cpu_reviewer import CPUReviewer
 from bot.decision_engine import Action, DecisionEngine
 from bot.diff_parser import DiffParser
-from bot.gpu_runner import GPURunner
 from bot.runners import GeminiRunner, GroqRunner, OpenRouterRunner
 
 
@@ -29,7 +27,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
     parser.add_argument(
         "--mode",
-        choices=["auto", "cpu", "gpu", "gemini", "openrouter", "groq", "skip"],
+        choices=["auto", "gemini", "openrouter", "groq", "skip"],
         default="auto",
         help="Review mode (default: auto)",
     )
@@ -102,14 +100,6 @@ def main() -> None:
             model=config.groq.model,
             cache_config=cache_config,
         ).review(parsed_diff)
-
-    elif effective_mode in ("cpu", Action.CPU_REVIEW.value):
-        logger.info("Running CPU review")
-        review_result = CPUReviewer(config).review(parsed_diff)
-
-    elif effective_mode in ("gpu", Action.GPU_REVIEW.value):
-        logger.info("Running GPU review")
-        review_result = GPURunner(config).review(parsed_diff)
 
     elif effective_mode == "skip":
         logger.info("Skipping review (--mode skip)")

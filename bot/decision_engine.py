@@ -12,8 +12,6 @@ from bot.diff_parser import ParsedDiff
 
 class Action(Enum):
     SKIP = "skip"
-    CPU_REVIEW = "cpu_review"
-    GPU_REVIEW = "gpu_review"
     OPENROUTER = "openrouter"
     GROQ = "groq"
     GEMINI = "gemini"
@@ -164,27 +162,10 @@ class DecisionEngine:
                 confidence=0.8
             )
 
-        if self.config.gpu.enabled and total_lines > self.config.gpu.threshold_lines:
-            return ReviewDecision(
-                action=Action.GPU_REVIEW,
-                reason=f"Large diff ({total_lines} lines) - using GPU",
-                confidence=0.9
-            )
-
-        if total_lines > self.config.filters.max_cpu_lines:
-            if self.config.gpu.enabled:
-                return ReviewDecision(
-                    action=Action.GPU_REVIEW,
-                    reason=f"Exceeds CPU limit ({total_lines} > {self.config.filters.max_cpu_lines}) - GPU",
-                    confidence=0.8
-                )
-            else:
-                logger.warning("Diff exceeds CPU limit but GPU disabled - running limited CPU review")
-
         return ReviewDecision(
-            action=Action.CPU_REVIEW,
-            reason=f"Standard review ({total_lines} lines)",
-            confidence=0.95
+            action=Action.SKIP,
+            reason="No review provider enabled",
+            skip_category="no_provider"
         )
 
     def _estimate_tokens(self, diff: ParsedDiff) -> int:

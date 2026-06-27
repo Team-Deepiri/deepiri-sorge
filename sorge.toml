@@ -8,19 +8,12 @@ min_lines = 20
 skip_docs = true
 skip_deps = true
 skip_tests = false
-max_cpu_lines = 500
 
 [review]
 style = "concise"
 include_security = true
 include_performance = true
 include_style = true
-
-[gpu]
-enabled = false
-
-[model]
-name = "codellama-7b-q4"
 
 [gemini]
 enabled = true
