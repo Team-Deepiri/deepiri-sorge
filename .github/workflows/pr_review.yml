@@ -67,25 +67,23 @@ jobs:
               -H "Authorization: Bearer $GITHUB_TOKEN" \
               -H "Accept: application/vnd.github+json" \
               "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER")
-
-            BASE_REF=$(echo "$PR_JSON" | python -c "import json,sys; d=json.load(sys.stdin); print(d['base']['ref'])")
-            HEAD_SHA=$(echo "$PR_JSON" | python -c "import json,sys; d=json.load(sys.stdin); print(d['head']['sha'])")
           else
             PR_NUMBER="${{ github.event.pull_request.number }}"
-            BASE_REF="${{ github.base_ref }}"
-            HEAD_SHA="${{ github.sha }}"
           fi
 
           echo "PR_NUMBER=$PR_NUMBER" >> $GITHUB_OUTPUT
           echo "REPO=$REPO" >> $GITHUB_OUTPUT
-          echo "BASE_REF=$BASE_REF" >> $GITHUB_OUTPUT
-          echo "HEAD_SHA=$HEAD_SHA" >> $GITHUB_OUTPUT
       
       - name: Extract diff
         id: diff
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git fetch origin ${{ steps.pr_info.outputs.BASE_REF }}
-          git diff origin/${{ steps.pr_info.outputs.BASE_REF }} ${{ steps.pr_info.outputs.HEAD_SHA }} > pr.diff
+          curl -fsSL \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3.diff" \
+            "https://api.github.com/repos/${{ steps.pr_info.outputs.REPO }}/pulls/${{ steps.pr_info.outputs.PR_NUMBER }}" \
+            -o pr.diff
           
           DIFF_SIZE=$(wc -l < pr.diff)
           echo "SIZE=$DIFF_SIZE" >> $GITHUB_OUTPUT
