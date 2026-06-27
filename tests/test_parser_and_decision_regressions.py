@@ -113,9 +113,9 @@ class TestDecisionEngineRegressions:
             files_changed=2,
         )
 
-        config = Config()
-        config.gemini.enabled = False
+
+        config.groq.enabled = True
         decision = DecisionEngine(config).decide(diff)
 
-        assert decision.action == Action.OPENROUTER
+        assert decision.action == Action.GROQ
         assert decision.skip_category is None

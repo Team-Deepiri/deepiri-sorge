@@ -16,6 +16,8 @@ def _sample_result(review_type: str) -> ReviewResult:
         recommendations=[],
         score=9.0,
         model="test-model",
+        latency_ms=0.0,
+
         review_type=review_type,
     )
 

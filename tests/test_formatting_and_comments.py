@@ -56,6 +56,8 @@ class TestCommentPosterFormatting:
             recommendations=[" tighten spacing  ", " add tests "],
             score=8.5,
             model=" heuristic ",
+            latency_ms=0.0,
+
             review_type=" groq ",
         )
 
@@ -74,6 +76,8 @@ class TestCommentPosterFormatting:
             summary="Looks fine",
             issues=[ReviewIssue(severity="low", file=None, line=None, message="Watch this area")],
             recommendations=[],
+            latency_ms=0.0,
+
             score=9.0,
             model="heuristic",
         )
