@@ -27,8 +27,12 @@ class TestConfig:
         assert filters.skip_deps is True
         assert filters.skip_tests is False
 
-    def test_gpu_defaults(self):
-        pass  # GPUConfig removed — GPU inference replaced by API-based runners
+    def test_routing_defaults(self):
+        config = Config()
+
+        assert config.routing.small_pr_threshold == 4500
+        assert config.routing.medium_pr_threshold == 50000
+        assert config.routing.large_pr_threshold == 50000
 
     def test_openrouter_defaults(self):
         openrouter = OpenRouterConfig()
@@ -53,9 +57,6 @@ class TestConfig:
         assert gemini.model == "gemini-2.5-flash"
         assert gemini.api_key is None
 
-    def test_model_defaults(self):
-        pass  # ModelConfig removed — local model inference removed
-
     def test_config_to_dict(self):
         config = Config()
 
@@ -73,12 +74,6 @@ class TestConfigOverrides:
         config = Config(filters=FiltersConfig(min_lines=50))
 
         assert config.filters.min_lines == 50
-
-    def test_custom_gpu_enabled(self):
-        pass  # GPUConfig removed
-
-    def test_custom_model_name(self):
-        pass  # ModelConfig removed
 
     def test_custom_gemini_model(self):
         config = Config(gemini=GeminiConfig(model="gemini-1.5-pro"))

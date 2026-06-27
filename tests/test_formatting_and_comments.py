@@ -56,12 +56,12 @@ class TestCommentPosterFormatting:
             recommendations=[" tighten spacing  ", " add tests "],
             score=8.5,
             model=" heuristic ",
-            review_type=" cpu ",
+            review_type=" groq ",
         )
 
         body = CommentPoster()._format_review_comment(review)
 
-        assert "**Model:** heuristic (cpu)" in body
+        assert "**Model:** heuristic (groq)" in body
         assert "### Summary\nSummary line\nextra details" in body
         assert ":warning: **src/service.py**:12" in body
         assert "> First line\n> second line" in body

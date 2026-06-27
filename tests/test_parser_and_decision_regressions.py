@@ -117,5 +117,5 @@ class TestDecisionEngineRegressions:
         config.gemini.enabled = False
         decision = DecisionEngine(config).decide(diff)
 
-        assert decision.action == Action.CPU_REVIEW
+        assert decision.action == Action.OPENROUTER
         assert decision.skip_category is None

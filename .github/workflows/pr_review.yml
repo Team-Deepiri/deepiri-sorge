@@ -16,8 +16,9 @@ on:
         type: choice
         options:
           - auto
-          - cpu
-          - gpu
+          - groq
+          - openrouter
+          - gemini
           - skip
 
 env:
@@ -81,6 +82,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           SORGE_MODE: ${{ inputs.mode || 'auto' }}
         run: |
           python -m bot.main \

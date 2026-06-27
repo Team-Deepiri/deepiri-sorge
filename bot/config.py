@@ -54,8 +54,8 @@ class GroqConfig(BaseModel):
 
 class RoutingConfig(BaseModel):
     small_pr_threshold: int = Field(default=4500, description="Max tokens for small PR (Groq)")
-    medium_pr_threshold: int = Field(default=30000, description="Max tokens for medium PR (OpenRouter)")
-    large_pr_threshold: int = Field(default=30000, description="Min tokens for large PR (Gemini)")
+    medium_pr_threshold: int = Field(default=50000, description="Max tokens for medium PR (OpenRouter)")
+    large_pr_threshold: int = Field(default=50000, description="Min tokens for large PR (Gemini)")
 
 
 class CacheConfig(BaseModel):
