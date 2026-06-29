@@ -1,7 +1,7 @@
 # Runs Sorge on PRs in this repository.
 # Other repos should copy consumer-pr-review.example.yml and pin a release tag.
 
-name: AI PR Review
+name: Sorge AI PR Review
 
 on:
   pull_request:

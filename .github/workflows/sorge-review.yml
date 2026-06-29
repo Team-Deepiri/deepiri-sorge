@@ -43,7 +43,7 @@ env:
 
 jobs:
   review:
-    name: AI Code Review
+    name: Sorge AI Code Review
     runs-on: ubuntu-latest
     timeout-minutes: 30
 

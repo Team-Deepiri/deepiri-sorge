@@ -219,7 +219,7 @@ class CommentPoster:
 
             for comment in comments:
                 body = comment.get("body", "")
-                if "deepiri-sorge" in body or "AI Code Review" in body:
+                if "deepiri-sorge" in body or "Sorge AI Code Review" in body:
                     return comment.get("id")
 
             return None

@@ -5,7 +5,7 @@
 #   GOOGLE_API_KEY, OPENROUTER_API_KEY, GROQ_API_KEY
 # GITHUB_TOKEN is provided automatically.
 
-name: AI PR Review
+name: Sorge AI PR Review
 
 on:
   pull_request:
