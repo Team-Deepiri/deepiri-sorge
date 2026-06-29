@@ -12,10 +12,10 @@ class TestConfig:
         assert config.filters.min_lines == 20
         assert config.gemini.enabled is True
         assert config.gemini.model == "gemini-2.5-flash"
-        assert config.openrouter.enabled is False
+        assert config.openrouter.enabled is True
         assert config.openrouter.model == "google/gemma-4-31b-it:free"
         assert config.openrouter.endpoint == "https://openrouter.ai/api/v1/chat/completions"
-        assert config.groq.enabled is False
+        assert config.groq.enabled is True
         assert config.groq.model == "qwen/qwen3-32b"
         assert config.groq.endpoint == "https://api.groq.com/openai/v1/chat/completions"
 
@@ -30,14 +30,14 @@ class TestConfig:
     def test_routing_defaults(self):
         config = Config()
 
-        assert config.routing.small_pr_threshold == 4500
+        assert config.routing.small_pr_threshold == 3700
         assert config.routing.medium_pr_threshold == 50000
         assert config.routing.large_pr_threshold == 50000
 
     def test_openrouter_defaults(self):
         openrouter = OpenRouterConfig()
 
-        assert openrouter.enabled is False
+        assert openrouter.enabled is True
         assert openrouter.model == "google/gemma-4-31b-it:free"
         assert openrouter.endpoint == "https://openrouter.ai/api/v1/chat/completions"
         assert openrouter.api_key is None
@@ -45,7 +45,7 @@ class TestConfig:
     def test_groq_defaults(self):
         groq = GroqConfig()
 
-        assert groq.enabled is False
+        assert groq.enabled is True
         assert groq.model == "qwen/qwen3-32b"
         assert groq.endpoint == "https://api.groq.com/openai/v1/chat/completions"
         assert groq.api_key is None

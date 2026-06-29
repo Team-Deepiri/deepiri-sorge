@@ -1,5 +1,6 @@
 """Tests for diff-anchored repository context weaving."""
 
+import os
 from pathlib import Path
 
 import pytest
@@ -44,7 +45,7 @@ def test_weaver_finds_existing_utility_for_duplicate_logic(tmp_path: Path):
     ).weave(tmp_path, diff)
 
     hit_paths = {h.path for h in pack.hits}
-    assert "bot/utils/cache.py" in hit_paths
+    assert any(os.path.normpath("bot/utils/cache.py") == os.path.normpath(p) for p in hit_paths)
     assert len(pack.text) < 2800
     assert pack.text.startswith("REPO_CONTEXT")
     assert "reuse|" in pack.text
