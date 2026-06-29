@@ -63,6 +63,16 @@ class CacheConfig(BaseModel):
     ttl_hours: int = Field(default=24, description="Cache TTL in hours")
 
 
+class RepoContextConfig(BaseModel):
+    enabled: bool = Field(default=True, description="Weave unchanged repo files into review context")
+    max_anchors: int = Field(default=8, description="Max diff anchors to search (token + CPU budget)")
+    max_scan_files: int = Field(default=120, description="Max source files to read per review")
+    max_files_per_anchor: int = Field(default=3, description="Stop searching each anchor after N hits")
+    max_snippets: int = Field(default=5, description="Max resonant evidence lines in prompt")
+    max_deps: int = Field(default=12, description="Max declared dependencies in context block")
+    max_chars: int = Field(default=2800, description="Character budget for repository context block")
+
+
 class Config(BaseModel):
     sorge: dict[str, bool] = Field(default_factory=lambda: {"enabled": True})
     filters: FiltersConfig = Field(default_factory=FiltersConfig)
@@ -72,6 +82,7 @@ class Config(BaseModel):
     groq: GroqConfig = Field(default_factory=GroqConfig)
     routing: RoutingConfig = Field(default_factory=RoutingConfig)
     cache: CacheConfig = Field(default_factory=CacheConfig)
+    repo_context: RepoContextConfig = Field(default_factory=RepoContextConfig)
 
     @classmethod
     def from_file(cls, path: str) -> "Config":

@@ -11,6 +11,8 @@ from loguru import logger
 from bot.config import CacheConfig
 from bot.diff_parser import ParsedDiff
 from bot.runners.base import BaseRunner, ReviewResult
+from bot.schemas import ReviewIssue
+from bot.utils.http_retry import post_with_retry
 
 
 class GroqRunner(BaseRunner):
@@ -61,8 +63,7 @@ class GroqRunner(BaseRunner):
 
         logger.debug(f"Calling Groq with model: {self.model}")
 
-        response = requests.post(self.endpoint, json=payload, headers=headers, timeout=120)
-        response.raise_for_status()
+        response = post_with_retry(self.endpoint, json=payload, headers=headers, timeout=120)
         latency_ms = (time.time() - start_time) * 1000
 
         data = response.json()
@@ -71,34 +72,14 @@ class GroqRunner(BaseRunner):
 
         parsed = self._parse_response(content)
 
-        from bot.runners.base import ReviewIssue
-
-        issues = [
-            ReviewIssue(
-                severity=i.get("severity", "medium"),
-                file=i.get("file"),
-                line=i.get("line"),
-                message=i.get("message", ""),
-                rule=i.get("rule"),
-                suggestion=i.get("suggestion"),
-            )
-            for i in parsed.get("issues", [])
-        ]
-
-        return ReviewResult(
-            summary=parsed.get("summary", "Review complete"),
-            issues=issues,
-            recommendations=parsed.get("recommendations", []),
-            score=parsed.get("score", 7.0),
+        return self._build_result(
+            parsed,
             latency_ms=latency_ms,
-            model=self.model,
             tokens_used=tokens_used,
             review_type="groq",
         )
 
     def _timeout_result(self, start_time: float) -> ReviewResult:
-        from bot.runners.base import ReviewIssue
-
         return ReviewResult(
             summary="Groq request timed out - consider using a smaller diff",
             issues=[

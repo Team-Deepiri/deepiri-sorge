@@ -12,14 +12,20 @@ from loguru import logger
 CACHE_DIR = Path.home() / ".cache" / "sorge" / "reviews"
 
 
-def _cache_path(diff_raw: str, model: str) -> Path:
-    key = hashlib.sha256(f"{model}:{diff_raw}".encode()).hexdigest()
+def _cache_path(diff_raw: str, model: str, context_fingerprint: str = "") -> Path:
+    key = hashlib.sha256(f"{model}:{context_fingerprint}:{diff_raw}".encode()).hexdigest()
     return CACHE_DIR / f"{key}.json"
 
 
-def get(diff_raw: str, model: str, ttl_hours: int = 24) -> dict | None:
+def get(
+    diff_raw: str,
+    model: str,
+    ttl_hours: int = 24,
+    *,
+    context_fingerprint: str = "",
+) -> dict | None:
     """Return cached result dict if present and not expired, else None."""
-    path = _cache_path(diff_raw, model)
+    path = _cache_path(diff_raw, model, context_fingerprint)
     if not path.exists():
         return None
 
@@ -37,10 +43,16 @@ def get(diff_raw: str, model: str, ttl_hours: int = 24) -> dict | None:
         return None
 
 
-def set(diff_raw: str, model: str, result: dict) -> None:
+def set(
+    diff_raw: str,
+    model: str,
+    result: dict,
+    *,
+    context_fingerprint: str = "",
+) -> None:
     """Write result dict to cache."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    path = _cache_path(diff_raw, model)
+    path = _cache_path(diff_raw, model, context_fingerprint)
     try:
         path.write_text(json.dumps({"cached_at": time.time(), "result": result}))
         logger.debug(f"Cached result at {path.name}")
@@ -48,9 +60,9 @@ def set(diff_raw: str, model: str, result: dict) -> None:
         logger.warning(f"Cache write error: {e}")
 
 
-def invalidate(diff_raw: str, model: str) -> None:
+def invalidate(diff_raw: str, model: str, *, context_fingerprint: str = "") -> None:
     """Delete a specific cache entry."""
-    path = _cache_path(diff_raw, model)
+    path = _cache_path(diff_raw, model, context_fingerprint)
     path.unlink(missing_ok=True)
 
 

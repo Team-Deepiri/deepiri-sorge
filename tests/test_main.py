@@ -58,7 +58,7 @@ def test_main_dispatches_openrouter_for_explicit_mode(monkeypatch, capsys):
             self.model = model
             self.cache_config = cache_config
 
-        def review(self, parsed_diff):
+        def review(self, parsed_diff, **kwargs):
             called["openrouter"] = True
             return _sample_result("openrouter")
 
@@ -73,7 +73,12 @@ def test_main_dispatches_openrouter_for_explicit_mode(monkeypatch, capsys):
             dry_run=True,
             verbose=False,
             mode="openrouter",
+            repo_root=".",
         ),
+    )
+    monkeypatch.setattr(
+        "bot.main.RepoContextWeaver",
+        lambda config: type("W", (), {"weave": lambda self, root, diff: type("P", (), {"text": "", "fingerprint": ""})()})(),
     )
     monkeypatch.setattr("bot.main.load_diff", lambda _: "diff-content")
     monkeypatch.setattr("bot.main.OpenRouterRunner", FakeOpenRouterRunner)
@@ -100,7 +105,7 @@ def test_main_dispatches_groq_for_auto_mode_decision(monkeypatch, capsys):
             self.model = model
             self.cache_config = cache_config
 
-        def review(self, parsed_diff):
+        def review(self, parsed_diff, **kwargs):
             called["groq"] = True
             return _sample_result("groq")
 
@@ -115,7 +120,12 @@ def test_main_dispatches_groq_for_auto_mode_decision(monkeypatch, capsys):
             dry_run=True,
             verbose=False,
             mode="auto",
+            repo_root=".",
         ),
+    )
+    monkeypatch.setattr(
+        "bot.main.RepoContextWeaver",
+        lambda config: type("W", (), {"weave": lambda self, root, diff: type("P", (), {"text": "", "fingerprint": ""})()})(),
     )
     monkeypatch.setattr("bot.main.load_diff", lambda _: "diff-content")
     monkeypatch.setattr("bot.main.GroqRunner", FakeGroqRunner)

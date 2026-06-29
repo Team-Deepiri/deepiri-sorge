@@ -37,3 +37,12 @@ large_pr_threshold = 50000
 [cache]
 enabled = true
 ttl_hours = 24
+
+[repo_context]
+enabled = true
+max_anchors = 8
+max_scan_files = 120
+max_files_per_anchor = 3
+max_snippets = 5
+max_deps = 12
+max_chars = 2800

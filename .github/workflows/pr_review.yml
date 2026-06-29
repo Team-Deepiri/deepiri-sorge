@@ -84,6 +84,11 @@ jobs:
             -H "Accept: application/vnd.github.v3.diff" \
             "https://api.github.com/repos/${{ steps.pr_info.outputs.REPO }}/pulls/${{ steps.pr_info.outputs.PR_NUMBER }}" \
             -o pr.diff
+
+          if [ ! -s pr.diff ]; then
+            echo "::error::PR diff is empty — check PR number, token permissions, and fork PR access"
+            exit 1
+          fi
           
           DIFF_SIZE=$(wc -l < pr.diff)
           echo "SIZE=$DIFF_SIZE" >> $GITHUB_OUTPUT
@@ -115,6 +120,7 @@ jobs:
 
           python -m bot.main \
             --diff pr.diff \
+            --repo-root . \
             --pr-number ${{ steps.pr_info.outputs.PR_NUMBER }} \
             --repo ${{ steps.pr_info.outputs.REPO }} \
             --token "$GITHUB_TOKEN" \

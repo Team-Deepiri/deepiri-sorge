@@ -11,6 +11,7 @@ from bot.comment_poster import CommentPoster
 from bot.config import Config
 from bot.decision_engine import Action, DecisionEngine
 from bot.diff_parser import DiffParser
+from bot.repo_context import RepoContextWeaver
 from bot.runners import GeminiRunner, GroqRunner, OpenRouterRunner
 
 
@@ -20,6 +21,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--diff", type=str, help="Path to diff file or diff content")
     parser.add_argument("--config", type=str, default="sorge.toml", help="Path to config file")
+    parser.add_argument(
+        "--repo-root",
+        type=str,
+        default=".",
+        help="Repository root for system-context weaving (default: cwd)",
+    )
     parser.add_argument("--pr-number", type=int, help="PR number for commenting")
     parser.add_argument("--repo", type=str, help="Repository in format 'owner/repo'")
     parser.add_argument("--token", type=str, help="GitHub token for API access")
@@ -65,7 +72,8 @@ def main() -> None:
         f"+{parsed_diff.lines_added} -{parsed_diff.lines_deleted}"
     )
 
-    decision = DecisionEngine(config).decide(parsed_diff)
+    engine = DecisionEngine(config)
+    decision = engine.decide(parsed_diff)
     logger.info(f"Decision: {decision.action.value} - {decision.reason}")
 
     if decision.action == Action.SKIP and args.mode == "auto":
@@ -73,9 +81,28 @@ def main() -> None:
         print(json.dumps({"action": "skip", "reason": decision.reason}))
         return
 
+    context_pack = RepoContextWeaver(config.repo_context).weave(
+        Path(args.repo_root),
+        parsed_diff,
+    )
+    repo_context_text = context_pack.text
+    context_fingerprint = context_pack.fingerprint
+
+    if args.mode == "auto" and context_pack.text:
+        routed = engine.decide(parsed_diff, extra_chars=len(context_pack.text))
+        if routed.action != decision.action:
+            logger.info(f"Re-routed after repo context: {routed.reason}")
+        decision = routed
+        logger.info(f"Final decision: {decision.action.value} - {decision.reason}")
+
     review_result = None
     effective_mode = args.mode if args.mode != "auto" else decision.action.value
     cache_config = config.cache if config.cache.enabled else None
+
+    review_kwargs = {
+        "repo_context": repo_context_text or None,
+        "context_fingerprint": context_fingerprint,
+    }
 
     if effective_mode in ("gemini", Action.GEMINI.value):
         logger.info("Running Gemini review")
@@ -83,7 +110,7 @@ def main() -> None:
             api_key=config.gemini.api_key,
             model=config.gemini.model,
             cache_config=cache_config,
-        ).review(parsed_diff)
+        ).review(parsed_diff, **review_kwargs)
 
     elif effective_mode in ("openrouter", Action.OPENROUTER.value):
         logger.info("Running OpenRouter review")
@@ -91,7 +118,7 @@ def main() -> None:
             api_key=config.openrouter.api_key,
             model=config.openrouter.model,
             cache_config=cache_config,
-        ).review(parsed_diff)
+        ).review(parsed_diff, **review_kwargs)
 
     elif effective_mode in ("groq", Action.GROQ.value):
         logger.info("Running Groq review")
@@ -99,7 +126,7 @@ def main() -> None:
             api_key=config.groq.api_key,
             model=config.groq.model,
             cache_config=cache_config,
-        ).review(parsed_diff)
+        ).review(parsed_diff, **review_kwargs)
 
     elif effective_mode == "skip":
         logger.info("Skipping review (--mode skip)")
@@ -118,7 +145,10 @@ def main() -> None:
 
         print(json.dumps(review_result.to_dict(), indent=2))
     else:
-        logger.error("No review result generated")
+        logger.critical(
+            f"Review failed: no result from {effective_mode} runner "
+            "(verify API keys, provider status, and diff size)"
+        )
         sys.exit(2)
 
 

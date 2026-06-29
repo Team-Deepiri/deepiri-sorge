@@ -164,6 +164,42 @@ class TestDecisionEngine:
 
         assert decision.action == Action.GEMINI
 
+    def test_large_tier_prefers_openrouter_when_gemini_disabled(self, engine):
+        engine.config.groq.enabled = True
+        engine.config.openrouter.enabled = True
+        engine.config.gemini.enabled = False
+        engine.config.routing.small_pr_threshold = 50
+        engine.config.routing.medium_pr_threshold = 80
+        engine.config.routing.large_pr_threshold = 100
+
+        huge = ParsedDiff(
+            raw="x" * 500,
+            files=["big.py"],
+            file_changes={},
+            lines_added=200,
+            lines_deleted=0,
+            files_changed=1,
+        )
+
+        decision = engine.decide(huge)
+
+        assert decision.action == Action.OPENROUTER
+        assert "large" in decision.reason
+
+    def test_extra_chars_can_promote_to_larger_tier(self, engine, medium_diff):
+        engine.config.groq.enabled = True
+        engine.config.openrouter.enabled = True
+        engine.config.gemini.enabled = True
+        engine.config.routing.small_pr_threshold = 10
+        engine.config.routing.medium_pr_threshold = 50
+        engine.config.routing.large_pr_threshold = 100
+
+        small_route = engine.decide(medium_diff)
+        assert small_route.action == Action.GROQ
+
+        large_route = engine.decide(medium_diff, extra_chars=10_000)
+        assert large_route.action == Action.GEMINI
+
 
 class TestComplexityScoring:
     def test_empty_diff_score(self, engine, empty_diff):

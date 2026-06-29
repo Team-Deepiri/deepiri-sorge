@@ -1,0 +1,413 @@
+"""Diff-anchored resonance — token- and CPU-efficient repository context.
+
+Strategy (fast + cheap):
+1. Extract a small set of high-signal anchors from added diff lines only.
+2. List candidate files via ``git ls-files`` (respects .gitignore, one subprocess).
+3. Search only utility paths + same package as changed files; stop early on budget.
+4. Emit compact one-line evidence cards (path:line | signature), not multi-line snippets.
+"""
+
+from __future__ import annotations
+
+import re
+import subprocess
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from loguru import logger
+
+from bot.config import RepoContextConfig
+from bot.diff_parser import ParsedDiff
+
+SKIP_DIR_NAMES = {
+    ".git",
+    ".github",
+    ".venv",
+    "venv",
+    "node_modules",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    "dist",
+    "build",
+    ".tox",
+    "htmlcov",
+    "coverage",
+}
+
+UTILITY_PATH_SEGMENTS = frozenset({
+    "utils",
+    "util",
+    "common",
+    "lib",
+    "libs",
+    "helpers",
+    "shared",
+    "internal",
+    "core",
+})
+
+SOURCE_EXTENSIONS = frozenset({
+    ".py",
+    ".js",
+    ".ts",
+    ".jsx",
+    ".tsx",
+    ".go",
+    ".rs",
+    ".java",
+    ".rb",
+    ".php",
+})
+
+IMPORT_RE = re.compile(
+    r"^\+\s*(?:from\s+([\w.]+)\s+import|import\s+([\w.]+))"
+)
+DEF_RE = re.compile(r"^\+\s*(?:async\s+)?def\s+(\w+)")
+CLASS_RE = re.compile(r"^\+\s*class\s+(\w+)")
+TOKEN_RE = re.compile(r"[a-zA-Z_][\w]{2,}")
+SYMBOL_LINE_RE = re.compile(
+    r"^(?:async\s+)?def\s+\w+|^class\s+\w+|^(?:export\s+)?(?:async\s+)?function\s+\w+"
+)
+
+STOPWORDS = frozenset({
+    "self", "true", "false", "none", "null", "return", "import", "from",
+    "class", "def", "async", "await", "else", "elif", "with", "pass",
+    "break", "continue", "raise", "yield", "lambda", "and", "not", "or",
+    "try", "except", "finally", "for", "while", "in", "is", "as", "if",
+    "print", "type", "str", "int", "list", "dict", "set", "tuple", "len",
+    "open", "path", "file", "data", "value", "item", "name", "text", "line",
+})
+
+
+@dataclass
+class CapabilityHit:
+    path: str
+    score: float
+    reason: str
+    signature: str
+    line: int | None = None
+
+
+@dataclass
+class RepoContextPack:
+    dependencies: list[str] = field(default_factory=list)
+    hits: list[CapabilityHit] = field(default_factory=list)
+    anchors: list[str] = field(default_factory=list)
+    fingerprint: str = ""
+
+    @property
+    def text(self) -> str:
+        return format_context_pack(self.hits, self.dependencies, self.anchors)
+
+
+def format_context_pack(
+    hits: list[CapabilityHit],
+    dependencies: list[str],
+    anchors: list[str],
+) -> str:
+    if not hits and not dependencies:
+        return ""
+
+    parts: list[str] = [
+        "REPO_CONTEXT compact evidence — prefer these over new duplicate logic in the DIFF:",
+    ]
+
+    if dependencies:
+        parts.append(f"deps: {', '.join(dependencies)}")
+
+    if anchors:
+        parts.append(f"anchors: {', '.join(anchors)}")
+
+    for hit in hits:
+        loc = f"{hit.path}:{hit.line}" if hit.line else hit.path
+        sig = hit.signature.replace("\n", " ").strip()[:120]
+        parts.append(f"reuse|{loc}|{sig} ({hit.reason})")
+
+    return "\n".join(parts)
+
+
+class RepoContextWeaver:
+    def __init__(self, config: RepoContextConfig):
+        self.config = config
+
+    def weave(self, repo_root: Path, diff: ParsedDiff) -> RepoContextPack:
+        if not self.config.enabled:
+            return RepoContextPack()
+
+        repo_root = repo_root.resolve()
+        if not repo_root.is_dir():
+            logger.warning(f"Repo root not found: {repo_root}")
+            return RepoContextPack()
+
+        changed = set(diff.files)
+        anchors = self._rank_anchors(self._extract_anchors(diff))
+        if not anchors:
+            return RepoContextPack()
+
+        dependencies = self._relevant_dependencies(repo_root, anchors)
+        candidate_files = self._prioritize_files(
+            self._list_tracked_files(repo_root),
+            changed,
+        )
+
+        hits = self._search_candidates(
+            repo_root=repo_root,
+            candidate_files=candidate_files,
+            anchors=anchors,
+            changed_files=changed,
+        )
+
+        hits = self._apply_char_budget(hits, dependencies, anchors)
+
+        pack = RepoContextPack(
+            dependencies=dependencies,
+            hits=hits,
+            anchors=anchors,
+            fingerprint=self._fingerprint(anchors, hits, dependencies),
+        )
+        logger.info(
+            f"Repo context: {len(anchors)} anchors, {len(hits)} hits, "
+            f"{len(pack.text)} chars, {len(candidate_files)} candidates"
+        )
+        return pack
+
+    def _extract_anchors(self, diff: ParsedDiff) -> set[str]:
+        anchors: set[str] = set()
+
+        for line in diff.raw.splitlines():
+            if not line.startswith("+") or line.startswith("+++"):
+                continue
+
+            for pattern in (IMPORT_RE, DEF_RE, CLASS_RE):
+                match = pattern.match(line)
+                if match:
+                    for group in match.groups():
+                        if group:
+                            leaf = group.split(".")[-1]
+                            if leaf.lower() not in STOPWORDS:
+                                anchors.add(leaf.lower())
+                            for part in re.split(r"[_-]", leaf):
+                                if len(part) >= 4 and part.lower() not in STOPWORDS:
+                                    anchors.add(part.lower())
+
+            for token in TOKEN_RE.findall(line[1:]):
+                lower = token.lower()
+                if len(lower) >= 5 and lower not in STOPWORDS:
+                    anchors.add(lower)
+
+        return anchors
+
+    def _rank_anchors(self, anchors: set[str]) -> list[str]:
+        """Prefer symbol-like anchors over generic tokens; cap count for search cost."""
+        ranked = sorted(
+            anchors,
+            key=lambda a: (len(a) >= 6, "_" in a or a.islower(), len(a)),
+            reverse=True,
+        )
+        return ranked[: self.config.max_anchors]
+
+    def _list_tracked_files(self, repo_root: Path) -> list[str]:
+        try:
+            proc = subprocess.run(
+                ["git", "-C", str(repo_root), "ls-files"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=True,
+            )
+            files = []
+            for rel in proc.stdout.splitlines():
+                if not rel or Path(rel).suffix not in SOURCE_EXTENSIONS:
+                    continue
+                if any(part in SKIP_DIR_NAMES for part in Path(rel).parts):
+                    continue
+                files.append(rel)
+            if files:
+                return files
+        except (subprocess.SubprocessError, FileNotFoundError) as exc:
+            logger.debug(f"git ls-files unavailable, falling back to walk: {exc}")
+
+        files = []
+        for path in repo_root.rglob("*"):
+            if not path.is_file() or path.suffix not in SOURCE_EXTENSIONS:
+                continue
+            if any(part in SKIP_DIR_NAMES for part in path.parts):
+                continue
+            files.append(str(path.relative_to(repo_root)))
+            if len(files) >= self.config.max_scan_files:
+                break
+        return files
+
+    def _prioritize_files(self, files: list[str], changed: set[str]) -> list[str]:
+        changed_dirs = {str(Path(f).parent) for f in changed}
+
+        def sort_key(rel: str) -> tuple[int, int, str]:
+            parts = {p.lower() for p in Path(rel).parts}
+            utility = 0 if parts & UTILITY_PATH_SEGMENTS else 1
+            neighbor = 0 if str(Path(rel).parent) in changed_dirs else 1
+            return (utility, neighbor, rel)
+
+        return sorted(files, key=sort_key)
+
+    def _search_candidates(
+        self,
+        repo_root: Path,
+        candidate_files: list[str],
+        anchors: list[str],
+        changed_files: set[str],
+    ) -> list[CapabilityHit]:
+        hits: dict[str, CapabilityHit] = {}
+        files_checked = 0
+
+        for anchor in anchors:
+            per_anchor = 0
+            for rel in candidate_files:
+                if rel in changed_files:
+                    continue
+                if files_checked >= self.config.max_scan_files:
+                    break
+                if per_anchor >= self.config.max_files_per_anchor:
+                    break
+                if rel in hits:
+                    continue
+
+                path = repo_root / rel
+                if not path.is_file():
+                    continue
+
+                files_checked += 1
+                match = self._find_anchor_line(path, anchor)
+                if match is None:
+                    continue
+
+                lineno, signature = match
+                score = 4.0 if self._is_utility_path(rel) else 2.0
+                if str(Path(rel).stem).lower() == anchor:
+                    score += 2.0
+                if SYMBOL_LINE_RE.match(signature.strip()):
+                    score += 1.5
+
+                hits[rel] = CapabilityHit(
+                    path=rel,
+                    score=score,
+                    reason=f"matches `{anchor}`",
+                    signature=signature.strip(),
+                    line=lineno,
+                )
+                per_anchor += 1
+
+            if len(hits) >= self.config.max_snippets:
+                break
+
+        return sorted(hits.values(), key=lambda h: h.score, reverse=True)
+
+    def _find_anchor_line(self, path: Path, anchor: str) -> tuple[int, str] | None:
+        anchor_lower = anchor.lower()
+        try:
+            with path.open(encoding="utf-8", errors="ignore") as handle:
+                for lineno, line in enumerate(handle, start=1):
+                    lower = line.lower()
+                    if anchor_lower not in lower:
+                        continue
+                    if SYMBOL_LINE_RE.match(line.strip()) or anchor_lower in lower:
+                        return lineno, line.rstrip()
+                    if lineno > 400:
+                        break
+        except OSError:
+            return None
+        return None
+
+    def _apply_char_budget(
+        self,
+        hits: list[CapabilityHit],
+        dependencies: list[str],
+        anchors: list[str],
+    ) -> list[CapabilityHit]:
+        hits = hits[: self.config.max_snippets]
+        kept: list[CapabilityHit] = []
+
+        for hit in hits:
+            trial = kept + [hit]
+            if len(format_context_pack(trial, dependencies, anchors)) > self.config.max_chars:
+                break
+            kept = trial
+
+        return kept
+
+    def _relevant_dependencies(self, repo_root: Path, anchors: list[str]) -> list[str]:
+        all_deps = self._parse_dependencies(repo_root)
+        if not all_deps:
+            return []
+
+        anchor_set = set(anchors)
+        relevant = [
+            dep for dep in all_deps
+            if any(a in dep.lower() for a in anchor_set)
+        ]
+        if relevant:
+            return relevant[: self.config.max_deps]
+
+        return all_deps[: self.config.max_deps]
+
+    def _parse_dependencies(self, repo_root: Path) -> list[str]:
+        deps: list[str] = []
+
+        req = repo_root / "requirements.txt"
+        if req.exists():
+            for line in req.read_text(encoding="utf-8", errors="ignore").splitlines():
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    name = re.split(r"[<>=!~\[]", line)[0].strip()
+                    if name:
+                        deps.append(name)
+
+        pyproject = repo_root / "pyproject.toml"
+        if pyproject.exists():
+            try:
+                import tomllib
+            except ModuleNotFoundError:
+                import toml as tomllib  # type: ignore[no-redef]
+
+            try:
+                data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+                for dep in data.get("project", {}).get("dependencies", []):
+                    name = re.split(r"[<>=!~\[]", dep)[0].strip()
+                    if name:
+                        deps.append(name)
+                for dep in data.get("tool", {}).get("poetry", {}).get("dependencies", {}):
+                    deps.append(dep)
+            except Exception:
+                pass
+
+        package_json = repo_root / "package.json"
+        if package_json.exists():
+            try:
+                import json
+                data = json.loads(package_json.read_text(encoding="utf-8"))
+                for section in ("dependencies", "devDependencies"):
+                    for name in data.get(section, {}):
+                        deps.append(name)
+            except Exception:
+                pass
+
+        return sorted(set(deps))
+
+    def _is_utility_path(self, rel_path: str) -> bool:
+        parts = {p.lower() for p in Path(rel_path).parts}
+        return bool(parts & UTILITY_PATH_SEGMENTS)
+
+    def _fingerprint(
+        self,
+        anchors: list[str],
+        hits: list[CapabilityHit],
+        dependencies: list[str],
+    ) -> str:
+        import hashlib
+
+        payload = "|".join([
+            ",".join(anchors),
+            ",".join(h.path for h in hits),
+            ",".join(dependencies),
+        ])
+        return hashlib.sha256(payload.encode()).hexdigest()[:16]

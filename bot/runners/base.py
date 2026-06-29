@@ -2,55 +2,14 @@
 
 from __future__ import annotations
 
-import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
 
 from bot.diff_parser import ParsedDiff
+from bot.prompts import load_review_template
+from bot.schemas import ReviewIssue, ReviewResult, issues_from_parsed, result_from_parsed
 
-
-@dataclass
-class ReviewIssue:
-    severity: str
-    file: str | None = None
-    line: int | None = None
-    message: str = ""
-    rule: str | None = None
-    suggestion: str | None = None
-
-
-@dataclass
-class ReviewResult:
-    summary: str
-    issues: list
-    recommendations: list
-    score: float
-    latency_ms: float
-    model: str
-    tokens_used: int | None = None
-    review_type: str = "api"
-
-    def to_dict(self) -> dict:
-        return {
-            "summary": self.summary,
-            "issues": [
-                {
-                    "severity": i.severity,
-                    "file": i.file,
-                    "line": i.line,
-                    "message": i.message,
-                    "rule": i.rule,
-                    "suggestion": i.suggestion,
-                }
-                for i in self.issues
-            ],
-            "recommendations": self.recommendations,
-            "score": self.score,
-            "latency_ms": self.latency_ms,
-            "model": self.model,
-            "tokens_used": self.tokens_used,
-            "review_type": self.review_type,
-        }
+# Re-export for backward compatibility with existing imports.
+__all__ = ["BaseRunner", "ReviewIssue", "ReviewResult"]
 
 
 class BaseRunner(ABC):
@@ -59,23 +18,37 @@ class BaseRunner(ABC):
     def __init__(self, api_key: str | None = None, cache_config=None):
         self.api_key = api_key
         self._cache_config = cache_config  # bot.config.CacheConfig or None
+        self._repo_context: str | None = None
 
-    # ------------------------------------------------------------------
-    # Public entry point — handles cache read/write around _call_api
-    # ------------------------------------------------------------------
-
-    def review(self, diff: ParsedDiff) -> ReviewResult | None:
+    def review(
+        self,
+        diff: ParsedDiff,
+        *,
+        repo_context: str | None = None,
+        context_fingerprint: str = "",
+    ) -> ReviewResult | None:
         if self._cache_config and self._cache_config.enabled:
             from bot.utils import cache as _cache
-            cached = _cache.get(diff.raw, self.model, self._cache_config.ttl_hours)
+            cached = _cache.get(
+                diff.raw,
+                self.model,
+                self._cache_config.ttl_hours,
+                context_fingerprint=context_fingerprint,
+            )
             if cached is not None:
                 return self._result_from_dict(cached)
 
+        self._repo_context = repo_context
         result = self._run_review(diff)
 
         if result is not None and self._cache_config and self._cache_config.enabled:
             from bot.utils import cache as _cache
-            _cache.set(diff.raw, self.model, result.to_dict())
+            _cache.set(
+                diff.raw,
+                self.model,
+                result.to_dict(),
+                context_fingerprint=context_fingerprint,
+            )
 
         return result
 
@@ -84,35 +57,29 @@ class BaseRunner(ABC):
         """Subclasses implement the actual API call here."""
         pass
 
-    # ------------------------------------------------------------------
-    # Shared helpers
-    # ------------------------------------------------------------------
-
     def _build_prompt(self, diff: ParsedDiff) -> str:
-        return f"""You are an expert code reviewer. Analyze the following code diff and provide a detailed review.
+        template = load_review_template()
+        context_block = self._repo_context or (
+            "(No repository context — note reuse risks if the PR adds helpers already in repo.)"
+        )
 
-Provide your response in JSON format with the following structure:
-{{
-    "summary": "Brief overview of changes",
-    "issues": [
-        {{
-            "severity": "critical|high|medium|low",
-            "file": "filename",
-            "line": line_number_or_null,
-            "message": "issue description",
-            "rule": "security|performance|style|best_practice",
-            "suggestion": "how to fix"
-        }}
-    ],
-    "recommendations": ["recommendation1", "recommendation2"],
-    "score": 1-10
-}}
+        return f"""{template}
 
-DIFF:
-{diff.raw}
+---
 
+## DIFF (primary review target)
 Files changed: {", ".join(diff.files)}
-Total lines: +{diff.lines_added} -{diff.lines_deleted}"""
+Total lines: +{diff.lines_added} -{diff.lines_deleted}
+
+```diff
+{diff.raw}
+```
+
+---
+
+## REPOSITORY CONTEXT
+{context_block}
+"""
 
     def _parse_response(self, response_text: str) -> dict:
         import json
@@ -132,19 +99,25 @@ Total lines: +{diff.lines_added} -{diff.lines_deleted}"""
             "score": 5.0,
         }
 
+    def _build_result(
+        self,
+        parsed: dict,
+        *,
+        latency_ms: float,
+        tokens_used: int | None,
+        review_type: str,
+    ) -> ReviewResult:
+        return result_from_parsed(
+            parsed,
+            latency_ms=latency_ms,
+            model=self.model,
+            tokens_used=tokens_used,
+            review_type=review_type,
+        )
+
     def _result_from_dict(self, data: dict) -> ReviewResult:
         """Reconstruct a ReviewResult from a cached to_dict() payload."""
-        issues = [
-            ReviewIssue(
-                severity=i.get("severity", "medium"),
-                file=i.get("file"),
-                line=i.get("line"),
-                message=i.get("message", ""),
-                rule=i.get("rule"),
-                suggestion=i.get("suggestion"),
-            )
-            for i in data.get("issues", [])
-        ]
+        issues = issues_from_parsed({"issues": data.get("issues", [])})
         return ReviewResult(
             summary=data.get("summary", ""),
             issues=issues,
