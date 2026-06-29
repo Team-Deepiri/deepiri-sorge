@@ -30,7 +30,7 @@ model = "qwen/qwen3-32b"
 endpoint = "https://api.groq.com/openai/v1/chat/completions"
 
 [routing]
-small_pr_threshold = 4500
+small_pr_threshold = 3700
 medium_pr_threshold = 50000
 large_pr_threshold = 50000
 
