@@ -33,7 +33,7 @@ class GeminiConfig(BaseModel):
 
 
 class OpenRouterConfig(BaseModel):
-    enabled: bool = Field(default=False, description="Enable OpenRouter")
+    enabled: bool = Field(default=True, description="Enable OpenRouter")
     model: str = Field(default="google/gemma-4-31b-it:free", description="Model to use")
     endpoint: str = Field(
         default="https://openrouter.ai/api/v1/chat/completions",
@@ -43,7 +43,7 @@ class OpenRouterConfig(BaseModel):
 
 
 class GroqConfig(BaseModel):
-    enabled: bool = Field(default=False, description="Enable Groq")
+    enabled: bool = Field(default=True, description="Enable Groq")
     model: str = Field(default="qwen/qwen3-32b", description="Model to use")
     endpoint: str = Field(
         default="https://api.groq.com/openai/v1/chat/completions",
