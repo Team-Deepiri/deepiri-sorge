@@ -75,12 +75,22 @@ class CommentPoster:
             f"({normalize_whitespace(review.review_type)})",
             f"**Quality Score:** {review.score:.1f}/10",
             "",
+        ]
+
+        if review.parse_warning:
+            lines.extend([
+                "> ⚠️ **Review incomplete:** the model response could not be fully parsed "
+                f"(`{review.parse_warning}`). Re-run the workflow or switch provider if this persists.",
+                "",
+            ])
+
+        lines.extend([
             "---",
             "",
             "### Summary",
             clean_multiline_text(review.summary),
             "",
-        ]
+        ])
 
         if review.issues:
             lines.extend([

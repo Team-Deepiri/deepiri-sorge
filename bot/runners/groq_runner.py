@@ -56,18 +56,40 @@ class GroqRunner(BaseRunner):
 
         payload = {
             "model": self.model,
-            "messages": [{"role": "user", "content": self._build_prompt(diff)}],
-            "temperature": 0.3,
-            "max_tokens": 1500,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a code review bot. Respond with a single raw JSON object only. "
+                        "No markdown fences, no prose before or after the JSON."
+                    ),
+                },
+                {"role": "user", "content": self._build_prompt(diff)},
+            ],
+            "temperature": 0.2,
+            "max_tokens": 2048,
+            "response_format": {"type": "json_object"},
         }
 
         logger.debug(f"Calling Groq with model: {self.model}")
 
-        response = post_with_retry(self.endpoint, json=payload, headers=headers, timeout=120)
+        try:
+            response = post_with_retry(self.endpoint, json=payload, headers=headers, timeout=120)
+        except requests.HTTPError as exc:
+            if payload.get("response_format") and self._is_json_mode_rejected(exc):
+                logger.warning("Groq rejected json_object mode; retrying without it")
+                payload = dict(payload)
+                payload.pop("response_format", None)
+                response = post_with_retry(self.endpoint, json=payload, headers=headers, timeout=120)
+            else:
+                raise
         latency_ms = (time.time() - start_time) * 1000
 
         data = response.json()
-        content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+        choice = data.get("choices", [{}])[0]
+        content = choice.get("message", {}).get("content", "")
+        if choice.get("finish_reason") == "length":
+            logger.warning("Groq response truncated (finish_reason=length)")
         tokens_used = data.get("usage", {}).get("total_tokens")
 
         parsed = self._parse_response(content)
@@ -78,6 +100,16 @@ class GroqRunner(BaseRunner):
             tokens_used=tokens_used,
             review_type="groq",
         )
+
+    @staticmethod
+    def _is_json_mode_rejected(exc: requests.HTTPError) -> bool:
+        response = exc.response
+        if response is None:
+            return False
+        if response.status_code not in {400, 422}:
+            return False
+        body = (response.text or "").lower()
+        return "response_format" in body or "json" in body
 
     def _timeout_result(self, start_time: float) -> ReviewResult:
         return ReviewResult(

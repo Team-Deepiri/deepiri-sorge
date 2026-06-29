@@ -50,10 +50,11 @@ class GeminiRunner(BaseRunner):
         payload = {
             "contents": [{"parts": [{"text": self._build_prompt(diff)}]}],
             "generationConfig": {
-                "temperature": 0.3,
+                "temperature": 0.2,
                 "maxOutputTokens": 8192,
                 "topP": 0.95,
                 "topK": 40,
+                "responseMimeType": "application/json",
             },
         }
 

@@ -71,6 +71,23 @@ class TestCommentPosterFormatting:
         assert "- tighten spacing" in body
         assert "- add tests" in body
 
+    def test_format_review_comment_shows_parse_warning(self):
+        review = ReviewResult(
+            summary="Partial output",
+            issues=[],
+            recommendations=[],
+            score=5.0,
+            model="gemma",
+            latency_ms=0.0,
+            review_type="openrouter",
+            parse_warning="non_json_response",
+        )
+
+        body = CommentPoster()._format_review_comment(review)
+
+        assert "Review incomplete" in body
+        assert "non_json_response" in body
+
     def test_format_review_comment_uses_general_for_missing_location(self):
         review = ReviewResult(
             summary="Looks fine",

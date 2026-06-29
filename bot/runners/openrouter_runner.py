@@ -58,19 +58,34 @@ class OpenRouterRunner(BaseRunner):
 
         payload = {
             "model": self.model,
-            "messages": [{"role": "user", "content": self._build_prompt(diff)}],
-            "temperature": 0.3,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a code review bot. Respond with a single raw JSON object only. "
+                        "No markdown fences, no prose before or after the JSON."
+                    ),
+                },
+                {"role": "user", "content": self._build_prompt(diff)},
+            ],
+            "temperature": 0.2,
             "max_tokens": 4096,
+            "response_format": {"type": "json_object"},
         }
 
         logger.debug(f"Calling OpenRouter with model: {self.model}")
 
-        response = post_with_retry(self.endpoint, json=payload, headers=headers, timeout=120)
+        response = self._post_openrouter(payload, headers)
         latency_ms = (time.time() - start_time) * 1000
 
         data = response.json()
-        content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+        choice = data.get("choices", [{}])[0]
+        content = choice.get("message", {}).get("content", "")
+        finish_reason = choice.get("finish_reason")
         tokens_used = data.get("usage", {}).get("total_tokens")
+
+        if finish_reason == "length":
+            logger.warning("OpenRouter response truncated (finish_reason=length)")
 
         parsed = self._parse_response(content)
 
@@ -80,6 +95,29 @@ class OpenRouterRunner(BaseRunner):
             tokens_used=tokens_used,
             review_type="openrouter",
         )
+
+    def _post_openrouter(self, payload: dict, headers: dict) -> requests.Response:
+        try:
+            return post_with_retry(self.endpoint, json=payload, headers=headers, timeout=120)
+        except requests.HTTPError as exc:
+            if payload.get("response_format") and self._is_json_mode_rejected(exc):
+                logger.warning("OpenRouter rejected json_object mode; retrying without it")
+                retry_payload = dict(payload)
+                retry_payload.pop("response_format", None)
+                return post_with_retry(
+                    self.endpoint, json=retry_payload, headers=headers, timeout=120
+                )
+            raise
+
+    @staticmethod
+    def _is_json_mode_rejected(exc: requests.HTTPError) -> bool:
+        response = exc.response
+        if response is None:
+            return False
+        if response.status_code not in {400, 422}:
+            return False
+        body = (response.text or "").lower()
+        return "response_format" in body or "json" in body
 
     def _timeout_result(self, start_time: float) -> ReviewResult:
         return ReviewResult(

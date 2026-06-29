@@ -7,6 +7,7 @@ from abc import ABC, abstractmethod
 from bot.diff_parser import ParsedDiff
 from bot.prompts import load_review_template
 from bot.schemas import ReviewIssue, ReviewResult, issues_from_parsed, result_from_parsed
+from bot.utils.response_parser import parse_review_response
 
 # Re-export for backward compatibility with existing imports.
 __all__ = ["BaseRunner", "ReviewIssue", "ReviewResult"]
@@ -82,22 +83,7 @@ Total lines: +{diff.lines_added} -{diff.lines_deleted}
 """
 
     def _parse_response(self, response_text: str) -> dict:
-        import json
-        import re
-
-        json_match = re.search(r"\{[\s\S]*\}", response_text)
-        if json_match:
-            try:
-                return json.loads(json_match.group())
-            except json.JSONDecodeError:
-                pass
-
-        return {
-            "summary": response_text[:500],
-            "issues": [],
-            "recommendations": [response_text[:500]],
-            "score": 5.0,
-        }
+        return parse_review_response(response_text)
 
     def _build_result(
         self,
@@ -127,4 +113,5 @@ Total lines: +{diff.lines_added} -{diff.lines_deleted}
             model=data.get("model", self.model),
             tokens_used=data.get("tokens_used"),
             review_type=data.get("review_type", "api"),
+            parse_warning=data.get("parse_warning"),
         )
