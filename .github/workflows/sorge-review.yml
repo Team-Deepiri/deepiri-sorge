@@ -1,0 +1,200 @@
+# Reusable PR review workflow — pin in consumer repos:
+#   uses: Team-Deepiri/deepiri-sorge/.github/workflows/sorge-review.yml@v0.1.0
+#   secrets: inherit
+
+name: Sorge PR Review (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      bot_ref:
+        description: "Git ref of deepiri-sorge to run (tag, SHA, or branch)"
+        required: false
+        type: string
+        default: main
+      mode:
+        description: "Review mode"
+        required: false
+        type: string
+        default: auto
+      pr_number:
+        description: "PR number (required for workflow_dispatch callers)"
+        required: false
+        type: string
+    secrets:
+      GITHUB_TOKEN:
+        required: true
+      GOOGLE_API_KEY:
+        required: false
+      OPENROUTER_API_KEY:
+        required: false
+      GROQ_API_KEY:
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+env:
+  PYTHON_VERSION: "3.11"
+  POETRY_VERSION: "1.8.2"
+  SORGE_BOT_REPO: Team-Deepiri/deepiri-sorge
+
+jobs:
+  review:
+    name: AI Code Review
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout target repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout sorge bot
+        if: github.repository != env.SORGE_BOT_REPO
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SORGE_BOT_REPO }}
+          ref: ${{ inputs.bot_ref }}
+          path: _sorge
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Poetry
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "poetry==${{ env.POETRY_VERSION }}"
+
+      - name: Install sorge dependencies
+        run: |
+          if [ -d "_sorge" ]; then
+            cd _sorge
+          fi
+          poetry install --no-interaction --no-ansi
+          echo "SORGE_ROOT=$(pwd)" >> "$GITHUB_ENV"
+
+      - name: Get PR information
+        id: pr_info
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          REPO="${{ github.repository }}"
+
+          if [ -n "${{ inputs.pr_number }}" ]; then
+            PR_NUMBER="${{ inputs.pr_number }}"
+          elif [ -n "${{ github.event.pull_request.number }}" ]; then
+            PR_NUMBER="${{ github.event.pull_request.number }}"
+          else
+            echo "::error::PR number not available — pass inputs.pr_number for workflow_dispatch"
+            exit 1
+          fi
+
+          echo "PR_NUMBER=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "REPO=$REPO" >> "$GITHUB_OUTPUT"
+
+      - name: Extract diff
+        id: diff
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          curl -fsSL \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3.diff" \
+            "https://api.github.com/repos/${{ steps.pr_info.outputs.REPO }}/pulls/${{ steps.pr_info.outputs.PR_NUMBER }}" \
+            -o pr.diff
+
+          if [ ! -s pr.diff ]; then
+            echo "::error::PR diff is empty — check PR number, token permissions, and fork PR access"
+            exit 1
+          fi
+
+          DIFF_SIZE=$(wc -l < pr.diff)
+          echo "SIZE=$DIFF_SIZE" >> "$GITHUB_OUTPUT"
+          echo "diff_size=$DIFF_SIZE" >> "$GITHUB_OUTPUT"
+
+      - name: Check for config file
+        id: config
+        run: |
+          if [ -f "sorge.toml" ]; then
+            echo "EXISTS=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "EXISTS=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run AI review
+        id: review
+        working-directory: ${{ github.workspace }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: |
+          set -o pipefail
+          echo '{}' > review-output.json
+
+          cd "$SORGE_ROOT"
+          poetry run python -m bot.main \
+            --diff "${{ github.workspace }}/pr.diff" \
+            --repo-root "${{ github.workspace }}" \
+            --pr-number ${{ steps.pr_info.outputs.PR_NUMBER }} \
+            --repo ${{ steps.pr_info.outputs.REPO }} \
+            --token "$GITHUB_TOKEN" \
+            --mode "${{ inputs.mode }}" \
+            --verbose | tee "${{ github.workspace }}/review-output.json"
+
+          ACTION=$(python -c "import json, pathlib; p=pathlib.Path('${{ github.workspace }}/review-output.json'); d=json.loads(p.read_text()) if p.exists() and p.read_text().strip().startswith('{') else {}; print(d.get('action','review'))")
+          echo "action=$ACTION" >> "$GITHUB_OUTPUT"
+
+      - name: Post skip comment if skipped
+        if: steps.review.outputs.action == 'skip'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          COMMENTS_JSON=$(curl -fsSL \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${{ steps.pr_info.outputs.REPO }}/issues/${{ steps.pr_info.outputs.PR_NUMBER }}/comments")
+
+          HAS_SKIP=$(echo "$COMMENTS_JSON" | python -c "import json,sys; comments=json.load(sys.stdin); print('true' if any('AI Code Review - Skipped' in (c.get('body') or '') and 'deepiri-sorge' in (c.get('body') or '') for c in comments) else 'false')")
+
+          if [ "$HAS_SKIP" = "true" ]; then
+            echo "Skip comment already exists, not posting duplicate."
+          else
+            curl -fsSL -X POST \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github.v3+json" \
+              "https://api.github.com/repos/${{ steps.pr_info.outputs.REPO }}/issues/${{ steps.pr_info.outputs.PR_NUMBER }}/comments" \
+              -d '{
+                "body": "## AI Code Review - Skipped\n\nThis PR was automatically analyzed and determined to not require AI review.\n\n*This is an automated comment by [deepiri-sorge](https://github.com/Team-Deepiri/deepiri-sorge).*"
+              }' >/dev/null
+          fi
+
+      - name: Upload review results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: review-results-${{ steps.pr_info.outputs.PR_NUMBER }}
+          path: |
+            pr.diff
+            review-output.json
+          retention-days: 7
+
+      - name: Post summary
+        if: always()
+        run: |
+          echo "## Review Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Metric | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|--------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| PR Number | #${{ steps.pr_info.outputs.PR_NUMBER }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Diff Size | ${{ steps.diff.outputs.SIZE }} lines |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Config Found | ${{ steps.config.outputs.EXISTS }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Review Mode | ${{ inputs.mode }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Sorge ref | ${{ inputs.bot_ref }} |" >> "$GITHUB_STEP_SUMMARY"
