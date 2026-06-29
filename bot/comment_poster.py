@@ -69,7 +69,7 @@ class CommentPoster:
 
     def _format_review_comment(self, review: ReviewResult) -> str:  # type: ignore
         lines = [
-            "## AI Code Review",
+            "## Sorge AI Code Review",
             "",
             f"**Model:** {normalize_whitespace(review.model)} "
             f"({normalize_whitespace(review.review_type)})",
