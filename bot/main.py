@@ -96,7 +96,6 @@ def main() -> None:
         logger.info(f"Final decision: {decision.action.value} - {decision.reason}")
 
     review_result = None
-    effective_mode = args.mode if args.mode != "auto" else decision.action.value
     cache_config = config.cache if config.cache.enabled else None
 
     review_kwargs = {
@@ -104,52 +103,85 @@ def main() -> None:
         "context_fingerprint": context_fingerprint,
     }
 
-    if effective_mode in ("gemini", Action.GEMINI.value):
-        logger.info("Running Gemini review")
-        review_result = GeminiRunner(
+    # Build runner lookup
+    runners = {
+        Action.GEMINI: lambda: GeminiRunner(
             api_key=config.gemini.api_key,
             model=config.gemini.model,
             cache_config=cache_config,
-        ).review(parsed_diff, **review_kwargs)
-
-    elif effective_mode in ("openrouter", Action.OPENROUTER.value):
-        logger.info("Running OpenRouter review")
-        review_result = OpenRouterRunner(
+        ).review(parsed_diff, **review_kwargs),
+        Action.OPENROUTER: lambda: OpenRouterRunner(
             api_key=config.openrouter.api_key,
             model=config.openrouter.model,
             cache_config=cache_config,
-        ).review(parsed_diff, **review_kwargs)
-
-    elif effective_mode in ("groq", Action.GROQ.value):
-        logger.info("Running Groq review")
-        review_result = GroqRunner(
+        ).review(parsed_diff, **review_kwargs),
+        Action.GROQ: lambda: GroqRunner(
             api_key=config.groq.api_key,
             model=config.groq.model,
             cache_config=cache_config,
-        ).review(parsed_diff, **review_kwargs)
+        ).review(parsed_diff, **review_kwargs),
+    }
 
-    elif effective_mode == "skip":
-        logger.info("Skipping review (--mode skip)")
-        print(json.dumps({"action": "skip", "reason": "mode=skip"}))
-        return
-
-    if review_result:
-        logger.info(f"Review complete: {len(review_result.issues)} issues found")
-
-        if args.pr_number and args.repo and not args.dry_run:
-            CommentPoster(args.token or "").post_review(
-                repo=args.repo,
-                pr_number=args.pr_number,
-                review=review_result,
-            )
-
-        print(json.dumps(review_result.to_dict(), indent=2))
-    else:
-        logger.critical(
-            f"Review failed: no result from {effective_mode} runner "
-            "(verify API keys, provider status, and diff size)"
+    if args.mode == "auto":
+        # Use preference chain from decision engine for runtime failover
+        # Each provider gets 3 retries (via post_with_retry inside runner)
+        chain = engine.get_preference_chain(
+            engine._estimate_tokens(parsed_diff, extra_chars=len(repo_context_text or ""))
         )
-        sys.exit(2)
+
+        for action, enabled in chain:
+            if not enabled:
+                continue
+            logger.info(f"Trying {action.value} review")
+            try:
+                result = runners[action]()
+                if result is not None:
+                    review_result = result
+                    logger.info(f"Review complete via {action.value}: {len(review_result.issues)} issues found")
+                    break
+            except Exception as e:
+                logger.warning(f"{action.value} failed ({e}), trying next provider...")
+                continue
+            logger.warning(f"{action.value} returned no result, trying next provider...")
+
+        if not review_result:
+            logger.critical(
+                "All providers exhausted — review failed "
+                "(verify API keys, provider status, and diff size)"
+            )
+            sys.exit(2)
+    else:
+        # Explicit mode — run only the requested provider
+        effective_mode = args.mode
+        runner_fn = runners.get(Action(effective_mode))
+        if runner_fn:
+            logger.info(f"Running {effective_mode} review (--mode {effective_mode})")
+            review_result = runner_fn()
+        elif effective_mode == "skip":
+            logger.info("Skipping review (--mode skip)")
+            print(json.dumps({"action": "skip", "reason": "mode=skip"}))
+            return
+        else:
+            logger.critical(f"Unknown mode: {effective_mode}")
+            sys.exit(2)
+
+        if review_result:
+            logger.info(f"Review complete: {len(review_result.issues)} issues found")
+        else:
+            logger.critical(
+                f"Review failed: no result from {effective_mode} runner "
+                "(verify API keys, provider status, and diff size)"
+            )
+            sys.exit(2)
+
+    if args.pr_number and args.repo and not args.dry_run:
+        CommentPoster(args.token or "").post_review(
+            repo=args.repo,
+            pr_number=args.pr_number,
+            review=review_result,
+        )
+
+    print(json.dumps(review_result.to_dict(), indent=2))
 
 
 def review() -> None:

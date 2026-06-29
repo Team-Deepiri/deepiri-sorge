@@ -126,6 +126,44 @@ class DecisionEngine:
             large_t=large_t,
         )
 
+    def get_preference_chain(
+        self,
+        estimated_tokens: int,
+    ) -> list[tuple[Action, bool]]:
+        """Return the ordered preference chain for a given token estimate.
+        
+        Used both for initial routing and for runtime provider failover.
+        Groq is excluded from medium/large tiers (32K window too small).
+        """
+        groq_enabled = bool(self.config.groq.enabled)
+        openrouter_enabled = bool(self.config.openrouter.enabled)
+        gemini_enabled = bool(self.config.gemini.enabled)
+        small_t = self.config.routing.small_pr_threshold
+        medium_t = self.config.routing.medium_pr_threshold
+        large_t = self.config.routing.large_pr_threshold
+
+        if estimated_tokens <= small_t:
+            return [
+                (Action.GROQ, groq_enabled),
+                (Action.OPENROUTER, openrouter_enabled),
+                (Action.GEMINI, gemini_enabled),
+            ]
+        elif estimated_tokens > large_t:
+            return [
+                (Action.GEMINI, gemini_enabled),
+                (Action.OPENROUTER, openrouter_enabled),
+            ]
+        elif estimated_tokens <= medium_t:
+            return [
+                (Action.OPENROUTER, openrouter_enabled),
+                (Action.GEMINI, gemini_enabled),
+            ]
+        else:
+            return [
+                (Action.GEMINI, gemini_enabled),
+                (Action.OPENROUTER, openrouter_enabled),
+            ]
+
     def _route_by_tier(
         self,
         *,
@@ -137,36 +175,19 @@ class DecisionEngine:
         medium_t: int,
         large_t: int,
     ) -> ReviewDecision:
+        chain = self.get_preference_chain(estimated_tokens)
+
+        # Determine tier label for logging
         if estimated_tokens <= small_t:
             tier = "small"
-            preference = (
-                (Action.GROQ, groq_enabled),
-                (Action.OPENROUTER, openrouter_enabled),
-                (Action.GEMINI, gemini_enabled),
-            )
         elif estimated_tokens > large_t:
             tier = "large"
-            preference = (
-                (Action.GEMINI, gemini_enabled),
-                (Action.OPENROUTER, openrouter_enabled),
-                (Action.GROQ, groq_enabled),
-            )
         elif estimated_tokens <= medium_t:
             tier = "medium"
-            preference = (
-                (Action.OPENROUTER, openrouter_enabled),
-                (Action.GROQ, groq_enabled),
-                (Action.GEMINI, gemini_enabled),
-            )
         else:
             tier = "between-medium-large"
-            preference = (
-                (Action.GEMINI, gemini_enabled),
-                (Action.OPENROUTER, openrouter_enabled),
-                (Action.GROQ, groq_enabled),
-            )
 
-        for action, enabled in preference:
+        for action, enabled in chain:
             if enabled:
                 confidence = 0.95 if tier in ("small", "medium", "large") else 0.85
                 return ReviewDecision(
