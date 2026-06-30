@@ -86,21 +86,26 @@ A GitHub-native, distributed AI review bot that:
 
 ### 1. Add to your repo
 
-Create `.github/workflows/pr_review.yml`:
+Copy [`.github/workflows/consumer-pr-review.example.yml`](.github/workflows/consumer-pr-review.example.yml) to your repo as `.github/workflows/pr_review.yml` and **pin a release tag** (not `@main`):
 
 ```yaml
-name: AI PR Review
-on:
-  pull_request:
-    types: [opened, synchronize, reopened]
-
 jobs:
   review:
-    uses: deepiri/deepiri-sorge/.github/workflows/pr_review.yml@main
+    uses: Team-Deepiri/deepiri-sorge/.github/workflows/sorge-review.yml@v0.1.0
     with:
-      pr_number: ${{ github.event.pull_request.number }}
+      bot_ref: v0.1.0
     secrets:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+```
+
+Or run via Docker after a release:
+
+```bash
+docker run --rm -e GITHUB_TOKEN -e GROQ_API_KEY ghcr.io/team-deepiri/deepiri-sorge:v0.1.0 \
+  --diff pr.diff --repo owner/repo --pr-number 1
 ```
 
 ### 2. Configure (optional)
@@ -195,6 +200,21 @@ deepiri-sorge/
 ├── tests/                 # Test suite
 └── docs/                  # Documentation
 ```
+
+## Releases (CD)
+
+Pushing a semver tag triggers [`.github/workflows/cd.yml`](.github/workflows/cd.yml):
+
+1. Runs the test suite
+2. Creates a [GitHub Release](https://github.com/Team-Deepiri/deepiri-sorge/releases)
+3. Publishes `ghcr.io/team-deepiri/deepiri-sorge:<tag>`
+
+```bash
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+Consumer workflows should pin the same tag for `uses:` and `bot_ref:`.
 
 ## License
 

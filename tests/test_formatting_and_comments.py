@@ -7,7 +7,7 @@ from tests.helpers import install_loguru_stub
 install_loguru_stub()
 
 from bot.comment_poster import CommentPoster
-from bot.cpu_reviewer import ReviewIssue, ReviewResult
+from bot.runners.base import ReviewIssue, ReviewResult
 from bot.utils.formatting import (
     chunk_text,
     clean_multiline_text,
@@ -56,12 +56,14 @@ class TestCommentPosterFormatting:
             recommendations=[" tighten spacing  ", " add tests "],
             score=8.5,
             model=" heuristic ",
-            review_type=" cpu ",
+            latency_ms=0.0,
+
+            review_type=" groq ",
         )
 
         body = CommentPoster()._format_review_comment(review)
 
-        assert "**Model:** heuristic (cpu)" in body
+        assert "**Model:** heuristic (groq)" in body
         assert "### Summary\nSummary line\nextra details" in body
         assert ":warning: **src/service.py**:12" in body
         assert "> First line\n> second line" in body
@@ -69,11 +71,30 @@ class TestCommentPosterFormatting:
         assert "- tighten spacing" in body
         assert "- add tests" in body
 
+    def test_format_review_comment_shows_parse_warning(self):
+        review = ReviewResult(
+            summary="Partial output",
+            issues=[],
+            recommendations=[],
+            score=5.0,
+            model="gemma",
+            latency_ms=0.0,
+            review_type="openrouter",
+            parse_warning="non_json_response",
+        )
+
+        body = CommentPoster()._format_review_comment(review)
+
+        assert "Review incomplete" in body
+        assert "non_json_response" in body
+
     def test_format_review_comment_uses_general_for_missing_location(self):
         review = ReviewResult(
             summary="Looks fine",
             issues=[ReviewIssue(severity="low", file=None, line=None, message="Watch this area")],
             recommendations=[],
+            latency_ms=0.0,
+
             score=9.0,
             model="heuristic",
         )
