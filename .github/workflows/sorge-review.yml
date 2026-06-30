@@ -22,8 +22,6 @@ on:
         required: false
         type: string
     secrets:
-      GITHUB_TOKEN:
-        required: true
       GOOGLE_API_KEY:
         required: false
       OPENROUTER_API_KEY:
