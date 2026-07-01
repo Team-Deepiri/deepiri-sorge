@@ -70,6 +70,7 @@ def test_main_dispatches_openrouter_for_explicit_mode(monkeypatch, capsys):
             pr_number=None,
             repo=None,
             token=None,
+            installation_id=None,
             dry_run=True,
             verbose=False,
             mode="openrouter",
@@ -97,17 +98,11 @@ def test_main_dispatches_openrouter_for_explicit_mode(monkeypatch, capsys):
 
 
 def test_main_dispatches_groq_for_auto_mode_decision(monkeypatch, capsys):
-    called = {"groq": False}
+    called = {"auto": False}
 
-    class FakeGroqRunner:
-        def __init__(self, api_key=None, model=None, cache_config=None):
-            self.api_key = api_key
-            self.model = model
-            self.cache_config = cache_config
-
-        def review(self, parsed_diff, **kwargs):
-            called["groq"] = True
-            return _sample_result("groq")
+    def fake_auto(*args, **kwargs):
+        called["auto"] = True
+        return _sample_result("groq")
 
     monkeypatch.setattr(
         "bot.main.parse_args",
@@ -117,6 +112,7 @@ def test_main_dispatches_groq_for_auto_mode_decision(monkeypatch, capsys):
             pr_number=None,
             repo=None,
             token=None,
+            installation_id=None,
             dry_run=True,
             verbose=False,
             mode="auto",
@@ -128,7 +124,7 @@ def test_main_dispatches_groq_for_auto_mode_decision(monkeypatch, capsys):
         lambda config: type("W", (), {"weave": lambda self, root, diff: type("P", (), {"text": "", "fingerprint": ""})()})(),
     )
     monkeypatch.setattr("bot.main.load_diff", lambda _: "diff-content")
-    monkeypatch.setattr("bot.main.GroqRunner", FakeGroqRunner)
+    monkeypatch.setattr("bot.main.run_auto_review", fake_auto)
     monkeypatch.setattr("bot.main.DiffParser.parse", lambda self, _: _sample_diff())
     monkeypatch.setattr(
         "bot.main.DecisionEngine.decide",
@@ -139,5 +135,5 @@ def test_main_dispatches_groq_for_auto_mode_decision(monkeypatch, capsys):
 
     out = capsys.readouterr().out
     payload = json.loads(out)
-    assert called["groq"] is True
+    assert called["auto"] is True
     assert payload["review_type"] == "groq"

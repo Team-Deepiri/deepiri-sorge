@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from bot.config import Config
-from bot.diff_parser import ParsedDiff
+from bot.diff_parser import ParsedDiff, estimate_tokens
 
 
 class Action(Enum):
@@ -21,6 +21,33 @@ class ReviewDecision:
     reason: str
     confidence: float = 1.0
     skip_category: str | None = None
+
+
+@dataclass
+class FileMetrics:
+    path: str
+    tokens: int
+    contains_security: bool = False
+
+
+@dataclass
+class PRMetrics:
+    total_tokens: int
+    max_file_tokens: int
+    file_count: int
+    file_tokens: dict[str, int]
+    contains_security: bool
+    extra_chars: int = 0
+
+    @property
+    def effective_tokens(self) -> int:
+        return self.total_tokens + self.extra_chars // 4
+
+
+SECURITY_KEYWORDS = [
+    "jwt", "oauth", "encrypt", "password", "token", "auth", "sql",
+    "secret", "credential", "bcrypt", "hash", "session",
+]
 
 
 class DecisionEngine:
@@ -203,7 +230,33 @@ class DecisionEngine:
         )
 
     def _estimate_tokens(self, diff: ParsedDiff, extra_chars: int = 0) -> int:
-        return (len(diff.raw) + extra_chars) // 4
+        return estimate_tokens(diff.raw) + extra_chars // 4
+
+    def compute_metrics(self, diff: ParsedDiff, extra_chars: int = 0) -> PRMetrics:
+        file_tokens: dict[str, int] = {}
+        max_file = 0
+        contains_security = False
+
+        for path, change in diff.file_changes.items():
+            tokens = estimate_tokens(change.raw_diff) if change.raw_diff else 0
+            file_tokens[path] = tokens
+            max_file = max(max_file, tokens)
+            text_lower = change.raw_diff.lower()
+            if any(kw in text_lower for kw in SECURITY_KEYWORDS):
+                contains_security = True
+
+        if not file_tokens and diff.raw:
+            file_tokens["__whole__"] = estimate_tokens(diff.raw)
+            max_file = file_tokens["__whole__"]
+
+        return PRMetrics(
+            total_tokens=estimate_tokens(diff.raw),
+            max_file_tokens=max_file,
+            file_count=len(diff.files),
+            file_tokens=file_tokens,
+            contains_security=contains_security,
+            extra_chars=extra_chars,
+        )
 
     def _matches_any_pattern(self, filename: str, patterns: list[str], flags: int = 0) -> bool:
         return any(re.search(p, filename, flags) for p in patterns)

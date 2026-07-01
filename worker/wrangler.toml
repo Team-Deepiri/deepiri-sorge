@@ -1,0 +1,6 @@
+name = "sorge-webhook"
+main = "src/index.js"
+compatibility_date = "2024-01-01"
+
+[vars]
+# Set secrets via: wrangler secret put GITHUB_WEBHOOK_SECRET

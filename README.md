@@ -84,31 +84,23 @@ A GitHub-native, distributed AI review bot that:
 
 ## Quick Start
 
-### 1. Add to your repo
+### Recommended: GitHub App (zero YAML in consumer repos)
 
-Copy [`.github/workflows/consumer-pr-review.example.yml`](.github/workflows/consumer-pr-review.example.yml) to your repo as `.github/workflows/pr_review.yml` and **pin a release tag** (not `@main`):
+1. Install the **Sorge GitHub App** on your org or repository.
+2. Optionally add `sorge.toml` in the repo root for filters and routing.
 
-```yaml
-jobs:
-  review:
-    uses: Team-Deepiri/deepiri-sorge/.github/workflows/sorge-review.yml@v0.1.0
-    with:
-      bot_ref: v0.1.0
-    secrets:
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-```
+No workflow files, no API keys in consumer repos — see [docs/GITHUB_APP.md](docs/GITHUB_APP.md).
 
-Or run via Docker after a release:
+### Alternative: reusable workflow (legacy)
+
+Copy [docs/legacy/consumer-pr-review.example.yml](docs/legacy/consumer-pr-review.example.yml) into your repo if you cannot use a GitHub App yet.
+
+### Docker
 
 ```bash
 docker run --rm -e GITHUB_TOKEN -e GROQ_API_KEY ghcr.io/team-deepiri/deepiri-sorge:v0.1.0 \
   --diff pr.diff --repo owner/repo --pr-number 1
 ```
-
-### 2. Configure (optional)
 
 Create `sorge.toml` in your repo root:
 

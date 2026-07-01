@@ -54,8 +54,16 @@ class GroqConfig(BaseModel):
 
 class RoutingConfig(BaseModel):
     small_pr_threshold: int = Field(default=3700, description="Max tokens for small PR (Groq)")
-    medium_pr_threshold: int = Field(default=50000, description="Max tokens for medium PR (OpenRouter)")
-    large_pr_threshold: int = Field(default=50000, description="Min tokens for large PR (Gemini)")
+    medium_pr_threshold: int = Field(default=200000, description="Max tokens for medium PR (OpenRouter)")
+    large_pr_threshold: int = Field(default=200000, description="Min tokens for large PR (Gemini)")
+    chunk_budget: int = Field(default=180000, description="Target tokens per chunk when splitting")
+
+
+class QuotaConfig(BaseModel):
+    gemini_rpd: int = Field(default=20, description="Gemini requests per day")
+    qwen_rpd: int = Field(default=1000, description="Groq/Qwen requests per day")
+    openrouter_rpd: int = Field(default=50, description="OpenRouter requests per day")
+    warn_at_pct: float = Field(default=0.8, description="Warn when quota usage exceeds this fraction")
 
 
 class CacheConfig(BaseModel):
@@ -81,6 +89,7 @@ class Config(BaseModel):
     openrouter: OpenRouterConfig = Field(default_factory=OpenRouterConfig)
     groq: GroqConfig = Field(default_factory=GroqConfig)
     routing: RoutingConfig = Field(default_factory=RoutingConfig)
+    quota: QuotaConfig = Field(default_factory=QuotaConfig)
     cache: CacheConfig = Field(default_factory=CacheConfig)
     repo_context: RepoContextConfig = Field(default_factory=RepoContextConfig)
 

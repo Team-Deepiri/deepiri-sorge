@@ -1,3 +1,4 @@
+# DEPRECATED — use GitHub App install instead (see docs/GITHUB_APP.md)
 # Copy to YOUR repo as .github/workflows/pr_review.yml
 # Pin to a released tag — do not float @main in production.
 #

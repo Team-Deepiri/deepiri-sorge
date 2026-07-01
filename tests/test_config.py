@@ -31,8 +31,9 @@ class TestConfig:
         config = Config()
 
         assert config.routing.small_pr_threshold == 3700
-        assert config.routing.medium_pr_threshold == 50000
-        assert config.routing.large_pr_threshold == 50000
+        assert config.routing.medium_pr_threshold == 200000
+        assert config.routing.large_pr_threshold == 200000
+        assert config.routing.chunk_budget == 180000
 
     def test_openrouter_defaults(self):
         openrouter = OpenRouterConfig()

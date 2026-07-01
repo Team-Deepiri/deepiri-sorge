@@ -1,0 +1,108 @@
+# Central dispatcher — triggered by GitHub App webhook (CF Worker) or manually.
+# Consumer repos need ZERO workflow YAML; install the Sorge GitHub App only.
+
+name: Sorge Dispatch Review
+
+on:
+  repository_dispatch:
+    types: [sorge-review]
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: "Target repo owner/name"
+        required: true
+        type: string
+      pr_number:
+        description: "PR number"
+        required: true
+        type: number
+      installation_id:
+        description: "GitHub App installation ID"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+env:
+  PYTHON_VERSION: "3.11"
+  POETRY_VERSION: "1.8.2"
+
+jobs:
+  review:
+    name: Sorge Central Review
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Resolve dispatch inputs
+        id: inputs
+        run: |
+          if [ -n "${{ github.event.client_payload.repo }}" ]; then
+            echo "REPO=${{ github.event.client_payload.repo }}" >> "$GITHUB_OUTPUT"
+            echo "PR_NUMBER=${{ github.event.client_payload.pr_number }}" >> "$GITHUB_OUTPUT"
+            echo "INSTALLATION_ID=${{ github.event.client_payload.installation_id }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "REPO=${{ inputs.repo }}" >> "$GITHUB_OUTPUT"
+            echo "PR_NUMBER=${{ inputs.pr_number }}" >> "$GITHUB_OUTPUT"
+            echo "INSTALLATION_ID=${{ inputs.installation_id }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout sorge
+        uses: actions/checkout@v4
+
+      - name: Checkout target repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.inputs.outputs.REPO }}
+          path: target-repo
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Poetry and dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "poetry==${{ env.POETRY_VERSION }}"
+          poetry install --no-interaction --no-ansi
+
+      - name: Run AI review
+        env:
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          SORGE_APP_ID: ${{ secrets.SORGE_APP_ID }}
+          SORGE_APP_PRIVATE_KEY: ${{ secrets.SORGE_APP_PRIVATE_KEY }}
+        run: |
+          set -o pipefail
+          INSTALL_FLAG=""
+          if [ -n "${{ steps.inputs.outputs.INSTALLATION_ID }}" ]; then
+            INSTALL_FLAG="--installation-id ${{ steps.inputs.outputs.INSTALLATION_ID }}"
+          fi
+
+          CONFIG_FLAG=""
+          if [ -f target-repo/sorge.toml ]; then
+            CONFIG_FLAG="--config target-repo/sorge.toml"
+          fi
+
+          poetry run python -m bot.main \
+            --repo "${{ steps.inputs.outputs.REPO }}" \
+            --pr-number "${{ steps.inputs.outputs.PR_NUMBER }}" \
+            --repo-root target-repo \
+            $INSTALL_FLAG \
+            $CONFIG_FLAG \
+            --mode auto \
+            --verbose | tee review-output.json
+
+      - name: Upload review artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: review-${{ steps.inputs.outputs.PR_NUMBER }}
+          path: review-output.json
+          retention-days: 7

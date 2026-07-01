@@ -135,6 +135,26 @@ class CommentPoster:
 
             lines.append("")
 
+        routing_meta = getattr(review, "routing_meta", None)
+        if routing_meta:
+            rung = routing_meta.get("rung", "?")
+            chunks = routing_meta.get("chunks", 1)
+            quota = routing_meta.get("quota") or {}
+            quota_lines = [
+                f"{k}: {v.get('used', 0)}/{v.get('limit', 0)}"
+                for k, v in quota.items()
+            ]
+            lines.extend([
+                "<details>",
+                f"<summary>Routing ({rung}, {chunks} chunk(s))</summary>",
+                "",
+                f"- Rung: `{rung}`",
+                f"- Chunks: {chunks}",
+            ])
+            if quota_lines:
+                lines.append(f"- Quota this run: {', '.join(quota_lines)}")
+            lines.extend(["", "</details>", ""])
+
         lines.extend([
             "---",
             "",
