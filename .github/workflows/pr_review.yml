@@ -1,5 +1,5 @@
-# Runs Sorge on PRs in this repository.
-# Other repos should copy consumer-pr-review.example.yml and pin a release tag.
+# Runs Sorge on PRs in this repository (dogfooding).
+# Other repos: install the Sorge GitHub App — see docs/GITHUB_APP.md
 
 name: Sorge AI PR Review
 

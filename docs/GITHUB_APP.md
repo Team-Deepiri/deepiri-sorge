@@ -54,6 +54,4 @@ gh workflow run dispatch-review.yml \
   -f installation_id=12345678
 ```
 
-## Legacy per-repo workflows
-
-See [docs/legacy/consumer-pr-review.example.yml](legacy/consumer-pr-review.example.yml) — **deprecated** in favor of App install.
+Install the GitHub App on target org/repos. No per-repo workflow YAML is required.

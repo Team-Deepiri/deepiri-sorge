@@ -91,11 +91,7 @@ A GitHub-native, distributed AI review bot that:
 
 No workflow files, no API keys in consumer repos — see [docs/GITHUB_APP.md](docs/GITHUB_APP.md).
 
-### Alternative: reusable workflow (legacy)
-
-Copy [docs/legacy/consumer-pr-review.example.yml](docs/legacy/consumer-pr-review.example.yml) into your repo if you cannot use a GitHub App yet.
-
-### Docker
+No workflow files or API keys are required in consumer repos — see [docs/GITHUB_APP.md](docs/GITHUB_APP.md).
 
 ```bash
 docker run --rm -e GITHUB_TOKEN -e GROQ_API_KEY ghcr.io/team-deepiri/deepiri-sorge:v0.1.0 \
