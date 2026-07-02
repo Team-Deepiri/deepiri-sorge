@@ -104,6 +104,7 @@ def execute_plan(
     repo_context: str | None,
     context_fingerprint: str,
     cache_config,
+    engine: DecisionEngine,
 ) -> tuple[list[ReviewResult], list[ReviewChunk]]:
     results: list[ReviewResult] = []
     unreviewable = [a.chunk for a in plan.assignments if a.chunk.unreviewable]
@@ -113,17 +114,42 @@ def execute_plan(
         return results, unreviewable
 
     def run_one(assignment):
+        # Try the assigned provider first
         runner = _make_runner(assignment.action, config, cache_config)
-        if not runner:
-            return None
-        result = runner.review(
-            assignment.chunk.parsed_diff,
-            repo_context=repo_context,
-            context_fingerprint=context_fingerprint,
-        )
-        if result:
-            quota.record(assignment.action.value)
-        return result
+        if runner:
+            result = runner.review(
+                assignment.chunk.parsed_diff,
+                repo_context=repo_context,
+                context_fingerprint=context_fingerprint,
+            )
+            if result:
+                quota.record(assignment.action.value)
+                return result
+
+        # Fallback: try other providers in preference chain
+        chain = engine.get_preference_chain(assignment.chunk.estimated_tokens)
+        for action, enabled in chain:
+            if action == assignment.action:
+                continue  # already tried above
+            if not enabled or not quota.can_use(action.value):
+                continue
+            runner = _make_runner(action, config, cache_config)
+            if not runner:
+                continue
+            logger.warning(
+                f"Falling back from {assignment.action.value} to {action.value} "
+                f"for chunk ({assignment.chunk.estimated_tokens} tokens)"
+            )
+            result = runner.review(
+                assignment.chunk.parsed_diff,
+                repo_context=repo_context,
+                context_fingerprint=context_fingerprint,
+            )
+            if result:
+                quota.record(action.value)
+                return result
+
+        return None
 
     if len(runnable) == 1:
         r = run_one(runnable[0])
@@ -202,6 +228,7 @@ def run_auto_review(
         repo_context=repo_context,
         context_fingerprint=context_fingerprint,
         cache_config=cache_config,
+        engine=engine,
     )
 
     all_unreviewable = [c for c in chunks if c.unreviewable] + unreviewable
