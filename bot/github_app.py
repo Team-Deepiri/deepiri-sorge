@@ -6,6 +6,7 @@ import os
 import time
 
 import requests
+from ghapi.all import GhApi
 from loguru import logger
 
 
@@ -54,24 +55,22 @@ def get_installation_token(
         logger.error(f"Failed to create App JWT: {e}")
         return None
 
-    url = f"https://api.github.com/app/installations/{installation_id}/access_tokens"
-    headers = {
-        "Authorization": f"Bearer {app_jwt}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-
     try:
-        resp = requests.post(url, headers=headers, timeout=30)
-        resp.raise_for_status()
-        return resp.json().get("token")
-    except requests.RequestException as e:
+        api = GhApi(token=app_jwt)
+        resp = api.apps.create_installation_access_token(installation_id)
+        return resp.token
+    except Exception as e:
         logger.error(f"Failed to get installation token: {e}")
         return None
 
 
 def fetch_pr_diff(repo: str, pr_number: int, token: str) -> str:
-    """Fetch unified diff for a PR."""
+    """Fetch unified diff for a PR.
+
+    Uses raw requests because ghapi's REST client expects JSON responses,
+    while this endpoint needs Accept: application/vnd.github.v3.diff
+    which returns raw text instead of JSON.
+    """
     url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}"
     headers = {
         "Authorization": f"Bearer {token}",
