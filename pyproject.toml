@@ -21,10 +21,6 @@ python-dotenv = ">=1.0.0"
 PyJWT = { version = ">=2.8.0", extras = ["crypto"] }
 rich = "^15.0.0"
 
-[tool.poetry.extras]
-llama = ["llama-cpp-python"]
-all = ["llama-cpp-python"]
-
 [tool.poetry.group.dev.dependencies]
 pytest = ">=7.4.0"
 pytest-asyncio = ">=0.21.0"
