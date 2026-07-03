@@ -9,6 +9,7 @@ from loguru import logger
 from bot.config import CacheConfig
 from bot.diff_parser import ParsedDiff
 from bot.runners.base import BaseRunner, ReviewResult
+from bot.runners.json_schema import REVIEW_JSON_SCHEMA
 from bot.schemas import ReviewIssue
 from bot.utils.http_retry import post_with_retry
 
@@ -55,6 +56,7 @@ class GeminiRunner(BaseRunner):
                 "topP": 0.95,
                 "topK": 40,
                 "responseMimeType": "application/json",
+                "responseSchema": REVIEW_JSON_SCHEMA,
             },
         }
 

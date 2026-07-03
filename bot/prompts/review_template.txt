@@ -20,4 +20,40 @@ Required keys:
 - "issues": array of {"severity", "file", "line", "category", "message", "mentoring", "suggestion"}
 - "best_practice_notes": array of strings
 
+## Example JSON Output
+
+```json
+{
+  "summary": "This PR introduces a new caching layer. The implementation is solid overall, with minor concerns about thread safety and duplicate abstractions.",
+  "metrics": {
+    "score": 7.5,
+    "requires_human_review": false
+  },
+  "issues": [
+    {
+      "severity": "medium",
+      "file": "src/cache.py",
+      "line": 45,
+      "category": "Reuse",
+      "message": "This duplicates the LRU cache already in `bot/utils/cache.py`.",
+      "mentoring": "Prefer importing from the existing cache module to reduce maintenance burden.",
+      "suggestion": "Replace with `from bot.utils.cache import LRUCache`"
+    },
+    {
+      "severity": "low",
+      "file": "src/cache.py",
+      "line": 12,
+      "category": "Naming",
+      "message": "Variable name `tmp` is unclear.",
+      "mentoring": "Descriptive names improve code readability and maintainability.",
+      "suggestion": "Rename to `eviction_candidates`"
+    }
+  ],
+  "best_practice_notes": [
+    "Consider adding integration tests for the new cache boundary",
+    "Add a timeout parameter to prevent unbounded growth"
+  ]
+}
+```
+
 Keep summary under 400 words. Max 8 issues.
