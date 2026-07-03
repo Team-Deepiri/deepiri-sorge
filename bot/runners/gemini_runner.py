@@ -1,4 +1,4 @@
-"""Gemini 2.5 Pro runner - uses Google AI Studio API"""
+"""Gemini 2.5 Flash runner - uses Google AI Studio API"""
 
 import os
 import time
@@ -9,10 +9,12 @@ from loguru import logger
 from bot.config import CacheConfig
 from bot.diff_parser import ParsedDiff
 from bot.runners.base import BaseRunner, ReviewResult
+from bot.schemas import ReviewIssue
+from bot.utils.http_retry import post_with_retry
 
 
 class GeminiRunner(BaseRunner):
-    """Runner for Gemini 2.5 Pro via Google AI Studio API"""
+    """Runner for Gemini 2.5 Flash via Google AI Studio API"""
 
     DEFAULT_MODEL = "gemini-2.5-flash"
     BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
@@ -48,17 +50,17 @@ class GeminiRunner(BaseRunner):
         payload = {
             "contents": [{"parts": [{"text": self._build_prompt(diff)}]}],
             "generationConfig": {
-                "temperature": 0.3,
+                "temperature": 0.2,
                 "maxOutputTokens": 8192,
                 "topP": 0.95,
                 "topK": 40,
+                "responseMimeType": "application/json",
             },
         }
 
         logger.debug(f"Calling Gemini with model: {self.model}")
 
-        response = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=180)
-        response.raise_for_status()
+        response = post_with_retry(url, json=payload, headers={"Content-Type": "application/json"}, timeout=180)
         latency_ms = (time.time() - start_time) * 1000
 
         data = response.json()
@@ -72,34 +74,14 @@ class GeminiRunner(BaseRunner):
 
         parsed = self._parse_response(content)
 
-        from bot.cpu_reviewer import ReviewIssue
-
-        issues = [
-            ReviewIssue(
-                severity=i.get("severity", "medium"),
-                file=i.get("file"),
-                line=i.get("line"),
-                message=i.get("message", ""),
-                rule=i.get("rule"),
-                suggestion=i.get("suggestion"),
-            )
-            for i in parsed.get("issues", [])
-        ]
-
-        return ReviewResult(
-            summary=parsed.get("summary", "Review complete"),
-            issues=issues,
-            recommendations=parsed.get("recommendations", []),
-            score=parsed.get("score", 7.0),
+        return self._build_result(
+            parsed,
             latency_ms=latency_ms,
-            model=self.model,
             tokens_used=tokens_used,
             review_type="gemini",
         )
 
     def _timeout_result(self, start_time: float) -> ReviewResult:
-        from bot.cpu_reviewer import ReviewIssue
-
         return ReviewResult(
             summary="Gemini request timed out - the diff may be too large",
             issues=[

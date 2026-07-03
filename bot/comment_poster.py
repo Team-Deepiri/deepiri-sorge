@@ -3,7 +3,7 @@
 import requests
 from loguru import logger
 
-from bot.cpu_reviewer import ReviewResult
+from bot.runners.base import ReviewResult
 from bot.utils.formatting import (
     clean_multiline_text,
     format_blockquote,
@@ -69,18 +69,28 @@ class CommentPoster:
 
     def _format_review_comment(self, review: ReviewResult) -> str:  # type: ignore
         lines = [
-            "## AI Code Review",
+            "## Sorge AI Code Review",
             "",
             f"**Model:** {normalize_whitespace(review.model)} "
             f"({normalize_whitespace(review.review_type)})",
             f"**Quality Score:** {review.score:.1f}/10",
             "",
+        ]
+
+        if review.parse_warning:
+            lines.extend([
+                "> ⚠️ **Review incomplete:** the model response could not be fully parsed "
+                f"(`{review.parse_warning}`). Re-run the workflow or switch provider if this persists.",
+                "",
+            ])
+
+        lines.extend([
             "---",
             "",
             "### Summary",
             clean_multiline_text(review.summary),
             "",
-        ]
+        ])
 
         if review.issues:
             lines.extend([
@@ -209,7 +219,7 @@ class CommentPoster:
 
             for comment in comments:
                 body = comment.get("body", "")
-                if "deepiri-sorge" in body or "AI Code Review" in body:
+                if "deepiri-sorge" in body or "Sorge AI Code Review" in body:
                     return comment.get("id")
 
             return None

@@ -8,7 +8,6 @@ min_lines = 20
 skip_docs = true
 skip_deps = true
 skip_tests = false
-max_cpu_lines = 500
 
 [review]
 style = "concise"
@@ -16,24 +15,34 @@ include_security = true
 include_performance = true
 include_style = true
 
-[gpu]
-enabled = false
-
-[model]
-name = "codellama-7b-q4"
-
-[github_models]
-enabled = true
-model = "gpt-4o"
-
 [gemini]
 enabled = true
 model = "gemini-2.5-flash"
 
+[openrouter]
+enabled = true
+model = "google/gemma-4-31b-it:free"
+endpoint = "https://openrouter.ai/api/v1/chat/completions"
+
+[groq]
+enabled = true
+model = "qwen/qwen3-32b"
+endpoint = "https://api.groq.com/openai/v1/chat/completions"
+
 [routing]
-small_pr_threshold = 10000
-large_pr_threshold = 25000
+small_pr_threshold = 3700
+medium_pr_threshold = 50000
+large_pr_threshold = 50000
 
 [cache]
 enabled = true
 ttl_hours = 24
+
+[repo_context]
+enabled = true
+max_anchors = 8
+max_scan_files = 120
+max_files_per_anchor = 3
+max_snippets = 5
+max_deps = 12
+max_chars = 2800

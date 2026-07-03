@@ -15,7 +15,6 @@ class FiltersConfig(BaseModel):
     skip_docs: bool = Field(default=True, description="Skip docs-only changes")
     skip_deps: bool = Field(default=True, description="Skip dependency changes")
     skip_tests: bool = Field(default=False, description="Skip test-only changes")
-    max_cpu_lines: int = Field(default=500, description="Max lines for CPU review")
 
 
 class ReviewConfig(BaseModel):
@@ -26,26 +25,6 @@ class ReviewConfig(BaseModel):
     include_style: bool = Field(default=True, description="Include style checks")
 
 
-class GPUConfig(BaseModel):
-    enabled: bool = Field(default=False, description="Enable GPU fallback")
-    threshold_lines: int = Field(default=1000, description="Line threshold for GPU")
-    endpoint: str = Field(default="", description="GPU endpoint URL")
-    api_key: str | None = Field(default=None, description="GPU API key")
-    timeout: int = Field(default=60, description="Timeout in seconds")
-
-
-class ModelConfig(BaseModel):
-    name: str = Field(default="llama-7b-q4", description="Model name")
-    path: str | None = Field(default=None, description="Path to model files")
-    context_size: int = Field(default=4096, description="Model context size")
-    threads: int = Field(default=4, description="CPU threads for inference")
-
-
-class GitHubModelsConfig(BaseModel):
-    enabled: bool = Field(default=True, description="Enable GitHub Models")
-    model: str = Field(default="gpt-4o", description="Model to use")
-    api_key: str | None = Field(default=None, description="API key (uses GITHUB_TOKEN env if not set)")
-
 
 class GeminiConfig(BaseModel):
     enabled: bool = Field(default=True, description="Enable Gemini")
@@ -53,9 +32,30 @@ class GeminiConfig(BaseModel):
     api_key: str | None = Field(default=None, description="API key (uses GOOGLE_API_KEY env if not set)")
 
 
+class OpenRouterConfig(BaseModel):
+    enabled: bool = Field(default=True, description="Enable OpenRouter")
+    model: str = Field(default="google/gemma-4-31b-it:free", description="Model to use")
+    endpoint: str = Field(
+        default="https://openrouter.ai/api/v1/chat/completions",
+        description="OpenRouter chat completions endpoint",
+    )
+    api_key: str | None = Field(default=None, description="API key (uses OPENROUTER_API_KEY env if not set)")
+
+
+class GroqConfig(BaseModel):
+    enabled: bool = Field(default=True, description="Enable Groq")
+    model: str = Field(default="qwen/qwen3-32b", description="Model to use")
+    endpoint: str = Field(
+        default="https://api.groq.com/openai/v1/chat/completions",
+        description="Groq chat completions endpoint",
+    )
+    api_key: str | None = Field(default=None, description="API key (uses GROQ_API_KEY env if not set)")
+
+
 class RoutingConfig(BaseModel):
-    small_pr_threshold: int = Field(default=10000, description="Max tokens for small PR (GitHub Models)")
-    large_pr_threshold: int = Field(default=25000, description="Min tokens for large PR (Gemini)")
+    small_pr_threshold: int = Field(default=3700, description="Max tokens for small PR (Groq)")
+    medium_pr_threshold: int = Field(default=50000, description="Max tokens for medium PR (OpenRouter)")
+    large_pr_threshold: int = Field(default=50000, description="Min tokens for large PR (Gemini)")
 
 
 class CacheConfig(BaseModel):
@@ -63,16 +63,26 @@ class CacheConfig(BaseModel):
     ttl_hours: int = Field(default=24, description="Cache TTL in hours")
 
 
+class RepoContextConfig(BaseModel):
+    enabled: bool = Field(default=True, description="Weave unchanged repo files into review context")
+    max_anchors: int = Field(default=8, description="Max diff anchors to search (token + CPU budget)")
+    max_scan_files: int = Field(default=120, description="Max source files to read per review")
+    max_files_per_anchor: int = Field(default=3, description="Stop searching each anchor after N hits")
+    max_snippets: int = Field(default=5, description="Max resonant evidence lines in prompt")
+    max_deps: int = Field(default=12, description="Max declared dependencies in context block")
+    max_chars: int = Field(default=2800, description="Character budget for repository context block")
+
+
 class Config(BaseModel):
     sorge: dict[str, bool] = Field(default_factory=lambda: {"enabled": True})
     filters: FiltersConfig = Field(default_factory=FiltersConfig)
     review: ReviewConfig = Field(default_factory=ReviewConfig)
-    gpu: GPUConfig = Field(default_factory=GPUConfig)
-    model: ModelConfig = Field(default_factory=ModelConfig)
-    github_models: GitHubModelsConfig = Field(default_factory=GitHubModelsConfig)
     gemini: GeminiConfig = Field(default_factory=GeminiConfig)
+    openrouter: OpenRouterConfig = Field(default_factory=OpenRouterConfig)
+    groq: GroqConfig = Field(default_factory=GroqConfig)
     routing: RoutingConfig = Field(default_factory=RoutingConfig)
     cache: CacheConfig = Field(default_factory=CacheConfig)
+    repo_context: RepoContextConfig = Field(default_factory=RepoContextConfig)
 
     @classmethod
     def from_file(cls, path: str) -> "Config":
@@ -93,32 +103,35 @@ class Config(BaseModel):
         if os.getenv("SORGE_MIN_LINES"):
             config.filters.min_lines = int(os.getenv("SORGE_MIN_LINES"))
 
-        if os.getenv("SORGE_MAX_CPU_LINES"):
-            config.filters.max_cpu_lines = int(os.getenv("SORGE_MAX_CPU_LINES"))
-
-        if os.getenv("SORGE_GPU_ENABLED"):
-            config.gpu.enabled = os.getenv("SORGE_GPU_ENABLED").lower() == "true"
-
-        if os.getenv("SORGE_GPU_ENDPOINT"):
-            config.gpu.endpoint = os.getenv("SORGE_GPU_ENDPOINT")
-
-        if os.getenv("SORGE_GPU_API_KEY"):
-            config.gpu.api_key = os.getenv("SORGE_GPU_API_KEY")
-
-        if os.getenv("SORGE_MODEL_PATH"):
-            config.model.path = os.getenv("SORGE_MODEL_PATH")
-
-        if os.getenv("SORGE_GITHUB_MODELS_ENABLED"):
-            config.github_models.enabled = os.getenv("SORGE_GITHUB_MODELS_ENABLED").lower() == "true"
-
-        if os.getenv("SORGE_GITHUB_MODELS_MODEL"):
-            config.github_models.model = os.getenv("SORGE_GITHUB_MODELS_MODEL")
-
         if os.getenv("SORGE_GEMINI_ENABLED"):
             config.gemini.enabled = os.getenv("SORGE_GEMINI_ENABLED").lower() == "true"
 
         if os.getenv("SORGE_GEMINI_MODEL"):
             config.gemini.model = os.getenv("SORGE_GEMINI_MODEL")
+
+        if os.getenv("SORGE_OPENROUTER_ENABLED"):
+            config.openrouter.enabled = os.getenv("SORGE_OPENROUTER_ENABLED").lower() == "true"
+
+        if os.getenv("SORGE_OPENROUTER_MODEL"):
+            config.openrouter.model = os.getenv("SORGE_OPENROUTER_MODEL")
+
+        if os.getenv("SORGE_OPENROUTER_ENDPOINT"):
+            config.openrouter.endpoint = os.getenv("SORGE_OPENROUTER_ENDPOINT")
+
+        if os.getenv("SORGE_OPENROUTER_API_KEY"):
+            config.openrouter.api_key = os.getenv("SORGE_OPENROUTER_API_KEY")
+
+        if os.getenv("SORGE_GROQ_ENABLED"):
+            config.groq.enabled = os.getenv("SORGE_GROQ_ENABLED").lower() == "true"
+
+        if os.getenv("SORGE_GROQ_MODEL"):
+            config.groq.model = os.getenv("SORGE_GROQ_MODEL")
+
+        if os.getenv("SORGE_GROQ_ENDPOINT"):
+            config.groq.endpoint = os.getenv("SORGE_GROQ_ENDPOINT")
+
+        if os.getenv("SORGE_GROQ_API_KEY"):
+            config.groq.api_key = os.getenv("SORGE_GROQ_API_KEY")
 
         return config
 

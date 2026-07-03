@@ -4,17 +4,14 @@ import re
 from dataclasses import dataclass
 from enum import Enum
 
-from loguru import logger
-
 from bot.config import Config
 from bot.diff_parser import ParsedDiff
 
 
 class Action(Enum):
     SKIP = "skip"
-    CPU_REVIEW = "cpu_review"
-    GPU_REVIEW = "gpu_review"
-    GITHUB_MODELS = "github_models"
+    OPENROUTER = "openrouter"
+    GROQ = "groq"
     GEMINI = "gemini"
 
 
@@ -71,7 +68,7 @@ class DecisionEngine:
     def __init__(self, config: Config):
         self.config = config
 
-    def decide(self, diff: ParsedDiff) -> ReviewDecision:
+    def decide(self, diff: ParsedDiff, extra_chars: int = 0) -> ReviewDecision:
         if not self.config.sorge.get("enabled", True):
             return ReviewDecision(
                 action=Action.SKIP,
@@ -109,68 +106,104 @@ class DecisionEngine:
                 skip_category="too_small"
             )
 
-        estimated_tokens = self._estimate_tokens(diff)
+        estimated_tokens = self._estimate_tokens(diff, extra_chars)
 
-        if self.config.github_models.enabled and self.config.gemini.enabled:
-            if estimated_tokens <= self.config.routing.small_pr_threshold:
-                return ReviewDecision(
-                    action=Action.GITHUB_MODELS,
-                    reason=f"Small diff (~{estimated_tokens} tokens) - using GitHub Models",
-                    confidence=0.95
-                )
-            elif estimated_tokens > self.config.routing.large_pr_threshold:
-                return ReviewDecision(
-                    action=Action.GEMINI,
-                    reason=f"Large diff (~{estimated_tokens} tokens) - using Gemini 2.5 Pro",
-                    confidence=0.95
-                )
-            else:
-                return ReviewDecision(
-                    action=Action.GITHUB_MODELS,
-                    reason=f"Medium diff (~{estimated_tokens} tokens) - using GitHub Models",
-                    confidence=0.9
-                )
+        groq_enabled = bool(self.config.groq.enabled)
+        openrouter_enabled = bool(self.config.openrouter.enabled)
+        gemini_enabled = bool(self.config.gemini.enabled)
 
-        if self.config.github_models.enabled:
-            return ReviewDecision(
-                action=Action.GITHUB_MODELS,
-                reason=f"Using GitHub Models ({total_lines} lines)",
-                confidence=0.95
-            )
+        small_t = self.config.routing.small_pr_threshold
+        medium_t = self.config.routing.medium_pr_threshold
+        large_t = self.config.routing.large_pr_threshold
 
-        if self.config.gemini.enabled:
-            return ReviewDecision(
-                action=Action.GEMINI,
-                reason=f"Using Gemini 2.5 Pro ({total_lines} lines)",
-                confidence=0.95
-            )
-
-        if self.config.gpu.enabled and total_lines > self.config.gpu.threshold_lines:
-            return ReviewDecision(
-                action=Action.GPU_REVIEW,
-                reason=f"Large diff ({total_lines} lines) - using GPU",
-                confidence=0.9
-            )
-
-        if total_lines > self.config.filters.max_cpu_lines:
-            if self.config.gpu.enabled:
-                return ReviewDecision(
-                    action=Action.GPU_REVIEW,
-                    reason=f"Exceeds CPU limit ({total_lines} > {self.config.filters.max_cpu_lines}) - GPU",
-                    confidence=0.8
-                )
-            else:
-                logger.warning("Diff exceeds CPU limit but GPU disabled - running limited CPU review")
-
-        return ReviewDecision(
-            action=Action.CPU_REVIEW,
-            reason=f"Standard review ({total_lines} lines)",
-            confidence=0.95
+        return self._route_by_tier(
+            estimated_tokens=estimated_tokens,
+            groq_enabled=groq_enabled,
+            openrouter_enabled=openrouter_enabled,
+            gemini_enabled=gemini_enabled,
+            small_t=small_t,
+            medium_t=medium_t,
+            large_t=large_t,
         )
 
-    def _estimate_tokens(self, diff: ParsedDiff) -> int:
-        raw_length = len(diff.raw)
-        return raw_length // 4
+    def get_preference_chain(
+        self,
+        estimated_tokens: int,
+    ) -> list[tuple[Action, bool]]:
+        """Return the ordered preference chain for a given token estimate.
+        
+        Used both for initial routing and for runtime provider failover.
+        Groq is excluded from medium/large tiers (32K window too small).
+        """
+        groq_enabled = bool(self.config.groq.enabled)
+        openrouter_enabled = bool(self.config.openrouter.enabled)
+        gemini_enabled = bool(self.config.gemini.enabled)
+        small_t = self.config.routing.small_pr_threshold
+        medium_t = self.config.routing.medium_pr_threshold
+        large_t = self.config.routing.large_pr_threshold
+
+        if estimated_tokens <= small_t:
+            return [
+                (Action.GROQ, groq_enabled),
+                (Action.OPENROUTER, openrouter_enabled),
+                (Action.GEMINI, gemini_enabled),
+            ]
+        elif estimated_tokens > large_t:
+            return [
+                (Action.GEMINI, gemini_enabled),
+                (Action.OPENROUTER, openrouter_enabled),
+            ]
+        elif estimated_tokens <= medium_t:
+            return [
+                (Action.OPENROUTER, openrouter_enabled),
+                (Action.GEMINI, gemini_enabled),
+            ]
+        else:
+            return [
+                (Action.GEMINI, gemini_enabled),
+                (Action.OPENROUTER, openrouter_enabled),
+            ]
+
+    def _route_by_tier(
+        self,
+        *,
+        estimated_tokens: int,
+        groq_enabled: bool,
+        openrouter_enabled: bool,
+        gemini_enabled: bool,
+        small_t: int,
+        medium_t: int,
+        large_t: int,
+    ) -> ReviewDecision:
+        chain = self.get_preference_chain(estimated_tokens)
+
+        # Determine tier label for logging
+        if estimated_tokens <= small_t:
+            tier = "small"
+        elif estimated_tokens > large_t:
+            tier = "large"
+        elif estimated_tokens <= medium_t:
+            tier = "medium"
+        else:
+            tier = "between-medium-large"
+
+        for action, enabled in chain:
+            if enabled:
+                confidence = 0.95 if tier in ("small", "medium", "large") else 0.85
+                return ReviewDecision(
+                    action=action,
+                    reason=f"{tier} diff (~{estimated_tokens} tokens) - using {action.value}",
+                    confidence=confidence,
+                )
+
+        return ReviewDecision(
+            action=Action.SKIP,
+            reason="No review provider enabled",
+            skip_category="no_provider",
+        )
+
+    def _estimate_tokens(self, diff: ParsedDiff, extra_chars: int = 0) -> int:
+        return (len(diff.raw) + extra_chars) // 4
 
     def _matches_any_pattern(self, filename: str, patterns: list[str], flags: int = 0) -> bool:
         return any(re.search(p, filename, flags) for p in patterns)

@@ -20,6 +20,12 @@ class _LoggerStub:
     def debug(self, *args, **kwargs):
         return None
 
+    def remove(self, *args, **kwargs):
+        return None
+
+    def add(self, *args, **kwargs):
+        return None
+
 
 def install_loguru_stub() -> None:
     loguru_stub: Any = types.ModuleType("loguru")

@@ -55,15 +55,12 @@ def score_color(score: float) -> str:
 
 def render_header(config: Config) -> Panel:
     backends = []
-    if config.github_models.enabled:
-        backends.append(f"[cyan]GitHub Models[/cyan] ({config.github_models.model})")
     if config.gemini.enabled:
         backends.append(f"[magenta]Gemini[/magenta] ({config.gemini.model})")
-    if config.gpu.enabled:
-        backends.append("[yellow]GPU[/yellow]")
 
     routing = (
-        f"Small ≤{config.routing.small_pr_threshold:,} tokens → GitHub Models  |  "
+        f"Small ≤{config.routing.small_pr_threshold:,} tokens → Groq  |  "
+        f"Medium ≤{config.routing.medium_pr_threshold:,} tokens → OpenRouter  |  "
         f"Large >{config.routing.large_pr_threshold:,} tokens → Gemini"
     )
 
@@ -85,10 +82,7 @@ def render_decision_table(decision, diff, estimated_tokens: int) -> Panel:
     table.add_column("value")
 
     action_colors = {
-        Action.GITHUB_MODELS: "cyan",
         Action.GEMINI: "magenta",
-        Action.CPU_REVIEW: "yellow",
-        Action.GPU_REVIEW: "green",
         Action.SKIP: "dim",
     }
     color = action_colors.get(decision.action, "white")
@@ -222,25 +216,13 @@ def run_tui(diff_content: str, config: Config, dry_run: bool = False) -> None:
         transient=True,
     ) as progress:
         action_label = {
-            Action.GITHUB_MODELS: f"Calling GitHub Models ({config.github_models.model})",
             Action.GEMINI: f"Calling Gemini ({config.gemini.model})",
-            Action.CPU_REVIEW: "Running CPU review",
-            Action.GPU_REVIEW: "Running GPU review",
+
         }.get(decision.action, "Reviewing…")
 
         task = progress.add_task(action_label, total=None)
 
         error_messages: list[str] = []
-
-        def _try_github_models() -> None:
-            from bot.runners import GitHubModelsRunner
-            from loguru import logger as _log
-            import sys as _sys
-            _log.remove()
-            _log.add(lambda m: error_messages.append(m.rstrip()), level="ERROR")
-            nonlocal result
-            runner = GitHubModelsRunner(api_key=config.github_models.api_key, model=config.github_models.model)
-            result = runner.review(parsed_diff)
 
         def _try_gemini() -> None:
             from bot.runners import GeminiRunner
@@ -251,24 +233,32 @@ def run_tui(diff_content: str, config: Config, dry_run: bool = False) -> None:
             runner = GeminiRunner(api_key=config.gemini.api_key, model=config.gemini.model)
             result = runner.review(parsed_diff)
 
-        if decision.action == Action.GITHUB_MODELS:
-            _try_github_models()
-            if result is None and config.gemini.enabled:
-                progress.update(task, description=f"GitHub Models failed, falling back to Gemini ({config.gemini.model})")
-                _try_gemini()
+        def _try_openrouter() -> None:
+            from bot.runners import OpenRouterRunner
+            from loguru import logger as _log
+            _log.remove()
+            _log.add(lambda m: error_messages.append(m.rstrip()), level="ERROR")
+            nonlocal result
+            runner = OpenRouterRunner(api_key=config.openrouter.api_key, model=config.openrouter.model)
+            result = runner.review(parsed_diff)
 
-        elif decision.action == Action.GEMINI:
+        def _try_groq() -> None:
+            from bot.runners import GroqRunner
+            from loguru import logger as _log
+            _log.remove()
+            _log.add(lambda m: error_messages.append(m.rstrip()), level="ERROR")
+            nonlocal result
+            runner = GroqRunner(api_key=config.groq.api_key, model=config.groq.model)
+            result = runner.review(parsed_diff)
+
+        if decision.action == Action.GEMINI:
             _try_gemini()
 
-        elif decision.action == Action.CPU_REVIEW:
-            from bot.cpu_reviewer import CPUReviewer
-            reviewer = CPUReviewer(config)
-            result = reviewer.review(parsed_diff)
+        elif decision.action == Action.OPENROUTER:
+            _try_openrouter()
 
-        elif decision.action == Action.GPU_REVIEW:
-            from bot.gpu_runner import GPURunner
-            runner = GPURunner(config)
-            result = runner.review(parsed_diff)
+        elif decision.action == Action.GROQ:
+            _try_groq()
 
         progress.remove_task(task)
 
@@ -295,7 +285,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="deepiri-sorge TUI monitor")
     parser.add_argument("--diff", required=True, help="Path to diff file or raw diff content")
     parser.add_argument("--config", default="sorge.toml", help="Path to config file")
-    parser.add_argument("--mode", choices=["auto", "github", "gemini", "cpu", "gpu"], default="auto")
+    parser.add_argument("--mode", choices=["auto", "gemini", "openrouter", "groq"], default="auto")
     parser.add_argument("--dry-run", action="store_true", help="Skip JSON stdout output")
     return parser.parse_args()
 
@@ -308,17 +298,15 @@ def main() -> None:
     config = Config.from_file(args.config) if Path(args.config).exists() else Config()
 
     # Apply --mode override to config routing
-    if args.mode == "github":
+    if args.mode == "gemini":
+        config.openrouter.enabled = False
+        config.groq.enabled = False
+    elif args.mode == "openrouter":
         config.gemini.enabled = False
-    elif args.mode == "gemini":
-        config.github_models.enabled = False
-    elif args.mode == "cpu":
-        config.github_models.enabled = False
+        config.groq.enabled = False
+    elif args.mode == "groq":
         config.gemini.enabled = False
-    elif args.mode == "gpu":
-        config.github_models.enabled = False
-        config.gemini.enabled = False
-        config.gpu.enabled = True
+        config.openrouter.enabled = False
 
     diff_arg = args.diff
     path = Path(diff_arg)
