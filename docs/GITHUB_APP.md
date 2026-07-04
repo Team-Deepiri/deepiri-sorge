@@ -28,8 +28,8 @@ Save **App ID** and download **private key**.
 | `SORGE_APP_ID` | GitHub App ID |
 | `SORGE_APP_PRIVATE_KEY` | PEM private key (full contents) |
 | `GOOGLE_API_KEY` | Gemini |
-| `OPENROUTER_API_KEY` | Gemma |
-| `GROQ_API_KEY` | Qwen/Groq |
+| `OPENROUTER_API_KEY` | Gemma/OpenRouter |
+| `GROQ_API_KEY` | GPT/Groq |
 | `GITHUB_DISPATCH_TOKEN` | PAT with `repo` scope (for Worker dispatch) |
 
 ### 3. Deploy Cloudflare Worker

@@ -16,7 +16,7 @@ def _chunk(tokens: int, raw: str = "diff") -> ReviewChunk:
 
 @pytest.fixture
 def quota():
-    return QuotaTracker(limits={"gemini": 20, "qwen": 1000, "openrouter": 50}, used={"gemini": 0, "qwen": 0, "openrouter": 0})
+    return QuotaTracker(limits={"gemini": 20, "gpt": 1000, "openrouter": 50}, used={"gemini": 0, "gpt": 0, "openrouter": 0})
 
 
 class TestContextRouter:

@@ -1,7 +1,3 @@
-"""Groq runner using the OpenAI-compatible chat completions API."""
-
-from __future__ import annotations
-
 import os
 import time
 
@@ -17,9 +13,9 @@ from bot.utils.http_retry import post_with_retry
 
 
 class GroqRunner(BaseRunner):
-    """Runner for Groq-hosted models (currently Qwen3-32B)."""
+    """Runner for Groq-hosted models (currently GPT OSS 120B)."""
 
-    DEFAULT_MODEL = "qwen/qwen3-32b"
+    DEFAULT_MODEL = "openai/gpt-oss-120b"
     DEFAULT_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
 
     def __init__(

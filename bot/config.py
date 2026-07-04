@@ -44,7 +44,7 @@ class OpenRouterConfig(BaseModel):
 
 class GroqConfig(BaseModel):
     enabled: bool = Field(default=True, description="Enable Groq")
-    model: str = Field(default="qwen/qwen3-32b", description="Model to use")
+    model: str = Field(default="openai/gpt-oss-120b", description="Model to use")
     endpoint: str = Field(
         default="https://api.groq.com/openai/v1/chat/completions",
         description="Groq chat completions endpoint",
@@ -53,7 +53,7 @@ class GroqConfig(BaseModel):
 
 
 class RoutingConfig(BaseModel):
-    small_pr_threshold: int = Field(default=3700, description="Max tokens for small PR (Groq)")
+    small_pr_threshold: int = Field(default=5000, description="Max tokens for small PR (Groq)")
     medium_pr_threshold: int = Field(default=200000, description="Max tokens for medium PR (OpenRouter)")
     large_pr_threshold: int = Field(default=200000, description="Min tokens for large PR (Gemini)")
     chunk_budget: int = Field(default=180000, description="Target tokens per chunk when splitting")
@@ -61,7 +61,7 @@ class RoutingConfig(BaseModel):
 
 class QuotaConfig(BaseModel):
     gemini_rpd: int = Field(default=20, description="Gemini requests per day")
-    qwen_rpd: int = Field(default=1000, description="Groq/Qwen requests per day")
+    gpt_rpd: int = Field(default=1000, description="Groq/GPT OSS requests per day")
     openrouter_rpd: int = Field(default=50, description="OpenRouter requests per day")
     warn_at_pct: float = Field(default=0.8, description="Warn when quota usage exceeds this fraction")
 

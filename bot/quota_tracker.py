@@ -18,7 +18,7 @@ class QuotaTracker:
     adjustments: list[str] = field(default_factory=list)
 
     PROVIDER_KEYS = {
-        "groq": "qwen",
+        "groq": "gpt",
         "openrouter": "openrouter",
         "gemini": "gemini",
     }
@@ -27,13 +27,13 @@ class QuotaTracker:
     def from_config(cls, config: QuotaConfig) -> QuotaTracker:
         limits = {
             "gemini": config.gemini_rpd,
-            "qwen": config.qwen_rpd,
+            "gpt": config.gpt_rpd,
             "openrouter": config.openrouter_rpd,
         }
         used = {k: 0 for k in limits}
         for env_name, key in (
             ("SORGE_GEMINI_USED_TODAY", "gemini"),
-            ("SORGE_QWEN_USED_TODAY", "qwen"),
+            ("SORGE_GPT_USED_TODAY", "gpt"),
             ("SORGE_OPENROUTER_USED_TODAY", "openrouter"),
         ):
             if os.getenv(env_name):

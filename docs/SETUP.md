@@ -103,8 +103,8 @@ This creates a virtual environment and installs all dependencies
 
 | Provider | Daily Limit | Context Window | Best For |
 |----------|-------------|----------------|----------|
-| Groq (Qwen 3 32B) | 1000 req/day | 32K | Small PRs (<3700 tokens) |
-| OpenRouter (Gemma 4) | 50 req/day | 1M | Medium PRs (3700–200K tokens) |
+| Groq (GPT OSS 120B) | 1000 req/day | 8K | Small PRs (<5000 tokens) |
+| OpenRouter (Gemma 4) | 50 req/day | 1M | Medium PRs (5000–200K tokens) |
 | Gemini 2.5 Flash | 20 req/day | 1M | Large PRs (>200K tokens) |
 
 ---
@@ -138,10 +138,10 @@ model = "google/gemma-4-31b-it:free"
 
 [groq]
 enabled = true          # Enable Groq (default: on)
-model = "qwen/qwen3-32b"
+model = "openai/gpt-oss-120b"
 
 [routing]
-small_pr_threshold = 3700     # Groq for diffs under this many tokens
+small_pr_threshold = 5000     # Groq for diffs under this many tokens
 medium_pr_threshold = 200000  # OpenRouter for diffs under this many tokens
 large_pr_threshold = 200000   # Gemini for diffs over this many tokens
 ```

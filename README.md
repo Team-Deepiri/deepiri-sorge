@@ -107,7 +107,7 @@ include_security = true
 include_performance = true
 
 [routing]
-small_pr_threshold = 3700   # Groq for small PRs
+small_pr_threshold = 5000   # Groq for small PRs
 medium_pr_threshold = 200000 # OpenRouter for medium PRs
 large_pr_threshold = 200000  # Gemini for large PRs
 ```

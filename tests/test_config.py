@@ -16,7 +16,7 @@ class TestConfig:
         assert config.openrouter.model == "google/gemma-4-31b-it:free"
         assert config.openrouter.endpoint == "https://openrouter.ai/api/v1/chat/completions"
         assert config.groq.enabled is True
-        assert config.groq.model == "qwen/qwen3-32b"
+        assert config.groq.model == "openai/gpt-oss-120b"
         assert config.groq.endpoint == "https://api.groq.com/openai/v1/chat/completions"
 
     def test_filters_defaults(self):
@@ -30,7 +30,7 @@ class TestConfig:
     def test_routing_defaults(self):
         config = Config()
 
-        assert config.routing.small_pr_threshold == 3700
+        assert config.routing.small_pr_threshold == 5000
         assert config.routing.medium_pr_threshold == 200000
         assert config.routing.large_pr_threshold == 200000
         assert config.routing.chunk_budget == 180000
@@ -47,7 +47,7 @@ class TestConfig:
         groq = GroqConfig()
 
         assert groq.enabled is True
-        assert groq.model == "qwen/qwen3-32b"
+        assert groq.model == "openai/gpt-oss-120b"
         assert groq.endpoint == "https://api.groq.com/openai/v1/chat/completions"
         assert groq.api_key is None
 
