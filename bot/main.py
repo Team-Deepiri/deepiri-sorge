@@ -249,7 +249,12 @@ def main() -> None:
 
     logger.info(f"deepiri-sorge v{__import__('bot').__version__}")
 
-    config = Config.from_file(args.config) if Path(args.config).exists() else Config.from_env()
+    # Precedence: env vars > file values > pydantic defaults
+    config = Config()
+    if Path(args.config).exists():
+        config = config.model_copy(update=Config.from_file(args.config).model_dump(exclude_unset=True))
+    env_config = Config.from_env()
+    config = config.model_copy(update=env_config.model_dump(exclude_unset=True))
 
     github_token = resolve_github_token(args)
 
