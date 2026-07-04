@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import os
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -71,7 +72,11 @@ def resolve_github_token(args: argparse.Namespace) -> str:
         if token:
             return token
         logger.warning("App installation token failed; falling back to --token / GITHUB_TOKEN")
-    return args.token or ""
+    token = args.token or os.getenv("GITHUB_TOKEN")
+    if not token:
+        logger.critical("No GitHub token available. Provide --token, --installation-id, or set GITHUB_TOKEN.")
+        sys.exit(1)
+    return token
 
 
 def _make_runner(action: Action, config: Config, cache_config):

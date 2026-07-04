@@ -52,6 +52,8 @@ def test_parse_args_accepts_openrouter_and_groq(monkeypatch):
 def test_main_dispatches_openrouter_for_explicit_mode(monkeypatch, capsys):
     called = {"openrouter": False}
 
+    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
+
     class FakeOpenRouterRunner:
         def __init__(self, api_key=None, model=None, cache_config=None):
             self.api_key = api_key
@@ -99,6 +101,8 @@ def test_main_dispatches_openrouter_for_explicit_mode(monkeypatch, capsys):
 
 def test_main_dispatches_groq_for_auto_mode_decision(monkeypatch, capsys):
     called = {"auto": False}
+
+    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
 
     def fake_auto(*args, **kwargs):
         called["auto"] = True
