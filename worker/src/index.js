@@ -2,8 +2,12 @@
  * Sorge webhook dispatcher — receives GitHub App pull_request events
  * and triggers the central review workflow via repository_dispatch.
  *
+ * Env vars:
+ *   GITHUB_WEBHOOK_SECRET    — HMAC secret for verifying webhook payloads
+ *   GITHUB_DISPATCH_TOKEN    — PAT or App token with repo scope for dispatch API
+ *   SORGE_DISPATCH_REPO      — Target repo for repository_dispatch (default: Team-Deepiri/deepiri-sorge)
+ *
  * Deploy: npx wrangler deploy
- * Secrets: GITHUB_WEBHOOK_SECRET, GITHUB_DISPATCH_TOKEN (PAT or App token with repo scope)
  */
 
 const DISPATCH_EVENT = "sorge-review";

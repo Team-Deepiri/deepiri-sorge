@@ -44,6 +44,10 @@ class PRMetrics:
         return self.total_tokens + self.extra_chars // 4
 
 
+# Heuristic: simple substring matching for security-related keywords.
+# Known limitations: may produce false positives (e.g. "hash" in a data structure)
+# or miss nuanced security changes. Consider regex with word boundaries or an
+# LLM-based security classification pass for higher accuracy in the future.
 SECURITY_KEYWORDS = [
     "jwt", "oauth", "encrypt", "password", "token", "auth", "sql",
     "secret", "credential", "bcrypt", "hash", "session",

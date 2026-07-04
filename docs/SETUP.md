@@ -4,8 +4,8 @@
 
 | | Local Development | Production (GitHub Actions) |
 |---|-------------------|----------------------------|
-| GitHub Token | Your PAT | Auto-available (`secrets.GITHUB_TOKEN`) |
-| Gemini Key | Set in `.env` | Set in GitHub Secrets |
+| GitHub Token | Your PAT or `GITHUB_TOKEN` env | Auto-available |
+| API Key | Set in `.env` | Set in GitHub Secrets |
 | Config | `sorge.toml` | `sorge.toml` in repo |
 
 ---
@@ -14,14 +14,18 @@
 
 This is what you want for your repo's PRs to be auto-reviewed.
 
-### 1. Add Gemini API Key Secret
+### 1. Add API Key Secrets
 
-1. Go to your repository on GitHub
-2. Go to **Settings** → **Secrets and variables** → **Actions**
-3. Click **New repository secret**
-4. Name: `GOOGLE_API_KEY`
-5. Value: Get from [Google AI Studio](https://aistudio.google.com/app/apikey)
-6. Click **Add secret**
+Sorge supports multiple LLM providers. Add at least one:
+
+| Secret | Provider | Get Key |
+|--------|----------|---------|
+| `GOOGLE_API_KEY` | Gemini (large PRs) | [Google AI Studio](https://aistudio.google.com/app/apikey) |
+| `OPENROUTER_API_KEY` | OpenRouter (medium PRs) | [OpenRouter](https://openrouter.ai/keys) |
+| `GROQ_API_KEY` | Groq (small PRs) | [Groq Console](https://console.groq.com/keys) |
+
+1. Go to your repository on GitHub → **Settings** → **Secrets and variables** → **Actions**
+2. Click **New repository secret** for each key you want to add
 
 ### 2. (Optional) Add sorge.toml
 
@@ -39,18 +43,15 @@ This is for testing the bot locally before deploying.
 
 ### 1. Get Your API Keys
 
-**GitHub Token (for GitHub Models):**
+**GitHub Token (for API access / diff fetching):**
 1. Go to GitHub → **Settings** → **Developer settings** → **Personal access tokens** → **Fine-grained tokens**
-2. Create new token:
-   - **Name**: Sorge Dev
-   - **Repository access**: Select your test repo(s)
-   - **Permissions**: Add "Models" → "Read-only"
+2. Create new token with repo scope
 3. Copy the token
 
-**Gemini API Key:**
-1. Go to [Google AI Studio](https://aistudio.google.com/app/apikey)
-2. Create or use existing API key
-3. Copy the key
+**API Keys (at least one provider):**
+- **Gemini**: [Google AI Studio](https://aistudio.google.com/app/apikey)
+- **OpenRouter**: [OpenRouter Keys](https://openrouter.ai/keys)
+- **Groq**: [Groq Console](https://console.groq.com/keys)
 
 ### 2. Set Up .env File
 
@@ -61,6 +62,8 @@ cp .env.example .env
 # Edit .env and fill in your keys:
 # GITHUB_TOKEN=your_github_pat
 # GOOGLE_API_KEY=your_gemini_key
+# OPENROUTER_API_KEY=your_openrouter_key
+# GROQ_API_KEY=your_groq_key
 ```
 
 ### 3. Run a Test
@@ -96,12 +99,13 @@ This creates a virtual environment and installs all dependencies
 
 ---
 
-## Model Limits
+## Provider Limits & Routing
 
-| Model | Daily Limit | Context | Best For |
-|-------|-------------|---------|----------|
-| GitHub Models (GPT-4o) | 150 requests | 128K | Small/medium PRs (<10K tokens) |
-| Gemini 2.5 Pro | 100 requests | 1M | Large PRs (>25K tokens) |
+| Provider | Daily Limit | Context Window | Best For |
+|----------|-------------|----------------|----------|
+| Groq (Qwen 3 32B) | 1000 req/day | 32K | Small PRs (<3700 tokens) |
+| OpenRouter (Gemma 4) | 50 req/day | 1M | Medium PRs (3700–200K tokens) |
+| Gemini 2.5 Flash | 20 req/day | 1M | Large PRs (>200K tokens) |
 
 ---
 
@@ -117,18 +121,29 @@ enabled = true
 min_lines = 20          # Skip PRs smaller than this
 skip_docs = true        # Skip docs-only PRs
 skip_deps = true        # Skip dependency-only PRs
+skip_tests = false      # Skip test-only PRs
 
-[github_models]
-enabled = true         # Enable GitHub Models (default: on)
-model = "gpt-4o"       # Model to use
+[review]
+style = "concise"       # concise | detailed | minimal
+include_security = true
+include_performance = true
 
 [gemini]
 enabled = true          # Enable Gemini (default: on)
-model = "gemini-2.5-pro-preview-0506"
+model = "gemini-2.5-flash"
+
+[openrouter]
+enabled = true          # Enable OpenRouter (default: on)
+model = "google/gemma-4-31b-it:free"
+
+[groq]
+enabled = true          # Enable Groq (default: on)
+model = "qwen/qwen3-32b"
 
 [routing]
-small_pr_threshold = 10000   # Use GitHub Models for diffs under this many tokens
-large_pr_threshold = 25000   # Use Gemini for diffs over this many tokens
+small_pr_threshold = 3700     # Groq for diffs under this many tokens
+medium_pr_threshold = 200000  # OpenRouter for diffs under this many tokens
+large_pr_threshold = 200000   # Gemini for diffs over this many tokens
 ```
 
 Defaults are tuned for typical PRs, so you likely don't need to change anything.
