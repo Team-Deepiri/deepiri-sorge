@@ -285,7 +285,7 @@ def main() -> None:
 
     if decision.action == Action.SKIP and args.mode == "auto":
         logger.info("Skipping review")
-        print(json.dumps({"action": "skip", "reason": decision.reason}))
+        print(json.dumps({"action": "skip", "reason": decision.reason}), file=sys.stderr)
         return
 
     context_pack = RepoContextWeaver(config.repo_context).weave(
@@ -349,7 +349,7 @@ def main() -> None:
             review_result = runner_fn()
         elif effective_mode == "skip":
             logger.info("Skipping review (--mode skip)")
-            print(json.dumps({"action": "skip", "reason": "mode=skip"}))
+            print(json.dumps({"action": "skip", "reason": "mode=skip"}), file=sys.stderr)
             return
         else:
             logger.critical(f"Unknown mode: {effective_mode}")
