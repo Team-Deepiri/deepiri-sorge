@@ -257,9 +257,11 @@ def main() -> None:
     # Precedence: env vars > file values > pydantic defaults
     config = Config()
     if Path(args.config).exists():
-        config = config.model_copy(update=Config.from_file(args.config).model_dump(exclude_unset=True))
+        config = Config.from_file(args.config)
     env_config = Config.from_env()
-    config = config.model_copy(update=env_config.model_dump(exclude_unset=True))
+    # Merge env values into the config object, preserving nested model types
+    for key in env_config.model_dump(exclude_unset=True, by_alias=False):
+        setattr(config, key, getattr(env_config, key))
 
     github_token = resolve_github_token(args)
 
