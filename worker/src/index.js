@@ -6,7 +6,6 @@
  * Secrets: GITHUB_WEBHOOK_SECRET, GITHUB_DISPATCH_TOKEN (PAT or App token with repo scope)
  */
 
-const DISPATCH_REPO = "Team-Deepiri/deepiri-sorge";
 const DISPATCH_EVENT = "sorge-review";
 
 async function verifySignature(body, signature, secret) {
@@ -26,6 +25,7 @@ async function verifySignature(body, signature, secret) {
 }
 
 async function dispatchReview(env, payload) {
+  const DISPATCH_REPO = env.SORGE_DISPATCH_REPO || "Team-Deepiri/deepiri-sorge";
   const pr = payload.pull_request;
   const repo = payload.repository.full_name;
   const installationId = payload.installation?.id;
