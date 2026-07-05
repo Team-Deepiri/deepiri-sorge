@@ -58,7 +58,7 @@ jobs:
         with:
           repository: ${{ steps.inputs.outputs.REPO }}
           path: target-repo
-          fetch-depth: 0
+          fetch-depth: 1
 
       - name: Set up Python
         uses: actions/setup-python@v5
