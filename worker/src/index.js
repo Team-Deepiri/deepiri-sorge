@@ -20,12 +20,15 @@ async function verifySignature(body, signature, secret) {
     enc.encode(secret),
     { name: "HMAC", hash: "SHA-256" },
     false,
-    ["sign"],
+    ["verify"],
   );
-  const sig = await crypto.subtle.sign("HMAC", key, enc.encode(body));
-  const hex = [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, "0")).join("");
-  const expected = `sha256=${hex}`;
-  return expected === signature;
+  const sigBytes = new Uint8Array(
+    signature
+      .replace(/^sha256=/, "")
+      .match(/.{2}/g)
+      .map((b) => parseInt(b, 16)),
+  );
+  return crypto.subtle.verify("HMAC", key, sigBytes, enc.encode(body));
 }
 
 async function dispatchReview(env, payload) {
