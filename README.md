@@ -78,7 +78,8 @@ A GitHub-native, distributed AI review bot that:
 ### Recommended: GitHub App (zero YAML in consumer repos)
 
 1. Install the **Sorge GitHub App** on your org or repository.
-2. Optionally add `sorge.toml` in the repo root for filters and routing.
+2. Comment `@sorge` on a PR when you want a review (on-demand only — no auto-run on every push).
+3. Optionally add `sorge.toml` in the repo root for filters and routing.
 
 No workflow files, no API keys in consumer repos — see [docs/GITHUB_APP.md](docs/GITHUB_APP.md).
 

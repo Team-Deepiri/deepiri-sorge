@@ -44,10 +44,17 @@ jobs:
             echo "REPO=${{ github.event.client_payload.repo }}" >> "$GITHUB_OUTPUT"
             echo "PR_NUMBER=${{ github.event.client_payload.pr_number }}" >> "$GITHUB_OUTPUT"
             echo "INSTALLATION_ID=${{ github.event.client_payload.installation_id }}" >> "$GITHUB_OUTPUT"
+            FORCE="${{ github.event.client_payload.force }}"
           else
             echo "REPO=${{ inputs.repo }}" >> "$GITHUB_OUTPUT"
             echo "PR_NUMBER=${{ inputs.pr_number }}" >> "$GITHUB_OUTPUT"
             echo "INSTALLATION_ID=${{ inputs.installation_id }}" >> "$GITHUB_OUTPUT"
+            FORCE=""
+          fi
+          if [ "$FORCE" = "true" ]; then
+            echo "FORCE_FLAG=--force" >> "$GITHUB_OUTPUT"
+          else
+            echo "FORCE_FLAG=" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Checkout sorge
@@ -96,6 +103,7 @@ jobs:
             --repo-root target-repo \
             $INSTALL_FLAG \
             $CONFIG_FLAG \
+            ${{ steps.inputs.outputs.FORCE_FLAG }} \
             --mode auto \
             --verbose | tee review-output.json
 

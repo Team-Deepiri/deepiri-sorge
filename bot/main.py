@@ -52,6 +52,11 @@ def parse_args() -> argparse.Namespace:
         default="auto",
         help="Review mode (default: auto)",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Run review even when filters would skip (e.g. @sorge mention)",
+    )
     return parser.parse_args()
 
 
@@ -285,10 +290,13 @@ def main() -> None:
     decision = engine.decide(parsed_diff)
     logger.info(f"Decision: {decision.action.value} - {decision.reason}")
 
-    if decision.action == Action.SKIP and args.mode == "auto":
+    if decision.action == Action.SKIP and args.mode == "auto" and not args.force:
         logger.info("Skipping review")
         print(json.dumps({"action": "skip", "reason": decision.reason}), file=sys.stderr)
         return
+
+    if decision.action == Action.SKIP and args.force:
+        logger.info(f"Force review — overriding skip: {decision.reason}")
 
     context_pack = RepoContextWeaver(config.repo_context).weave(
         Path(args.repo_root),
