@@ -27,7 +27,6 @@ class ReviewDecision:
 class FileMetrics:
     path: str
     tokens: int
-    contains_security: bool = False
 
 
 @dataclass
@@ -36,22 +35,11 @@ class PRMetrics:
     max_file_tokens: int
     file_count: int
     file_tokens: dict[str, int]
-    contains_security: bool
     extra_chars: int = 0
 
     @property
     def effective_tokens(self) -> int:
         return self.total_tokens + self.extra_chars // 4
-
-
-# Heuristic: simple substring matching for security-related keywords.
-# Known limitations: may produce false positives (e.g. "hash" in a data structure)
-# or miss nuanced security changes. Consider regex with word boundaries or an
-# LLM-based security classification pass for higher accuracy in the future.
-SECURITY_KEYWORDS = [
-    "jwt", "oauth", "encrypt", "password", "token", "auth", "sql",
-    "secret", "credential", "bcrypt", "hash", "session",
-]
 
 
 class DecisionEngine:
@@ -239,15 +227,11 @@ class DecisionEngine:
     def compute_metrics(self, diff: ParsedDiff, extra_chars: int = 0) -> PRMetrics:
         file_tokens: dict[str, int] = {}
         max_file = 0
-        contains_security = False
 
         for path, change in diff.file_changes.items():
             tokens = estimate_tokens(change.raw_diff) if change.raw_diff else 0
             file_tokens[path] = tokens
             max_file = max(max_file, tokens)
-            text_lower = change.raw_diff.lower()
-            if any(kw in text_lower for kw in SECURITY_KEYWORDS):
-                contains_security = True
 
         if not file_tokens and diff.raw:
             file_tokens["__whole__"] = estimate_tokens(diff.raw)
@@ -258,7 +242,6 @@ class DecisionEngine:
             max_file_tokens=max_file,
             file_count=len(diff.files),
             file_tokens=file_tokens,
-            contains_security=contains_security,
             extra_chars=extra_chars,
         )
 

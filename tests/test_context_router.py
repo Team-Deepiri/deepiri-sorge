@@ -27,7 +27,6 @@ class TestContextRouter:
             max_file_tokens=2000,
             file_count=1,
             file_tokens={"a.py": 2000},
-            contains_security=False,
         )
         plan = router.route(metrics, [_chunk(2000)], quota)
         assert plan.rung == "tiny"
@@ -40,7 +39,6 @@ class TestContextRouter:
             max_file_tokens=50_000,
             file_count=1,
             file_tokens={"a.py": 50_000},
-            contains_security=False,
         )
         plan = router.route(metrics, [_chunk(50_000, raw="x" * 200_000)], quota)
         assert plan.rung == "standard"
@@ -53,7 +51,6 @@ class TestContextRouter:
             max_file_tokens=150_000,
             file_count=2,
             file_tokens={"a.py": 150_000, "b.py": 150_000},
-            contains_security=False,
         )
         chunks = [_chunk(150_000), _chunk(150_000)]
         plan = router.route(metrics, chunks, quota)
@@ -68,7 +65,6 @@ class TestContextRouter:
             max_file_tokens=50_000,
             file_count=1,
             file_tokens={"a.py": 50_000},
-            contains_security=False,
         )
         plan = router.route(metrics, [_chunk(50_000)], quota)
         assert plan.assignments[0].action.value == "gemini"
