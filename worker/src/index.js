@@ -74,6 +74,7 @@ async function dispatchReview(env, { repo, prNumber, installationId, trigger }) 
         Accept: "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
         "Content-Type": "application/json",
+        "User-Agent": "sorge-webhook-worker",
       },
       body: JSON.stringify({
         event_type: DISPATCH_EVENT,
