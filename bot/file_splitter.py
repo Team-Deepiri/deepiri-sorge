@@ -4,8 +4,70 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from bot.diff_parser import ParsedDiff, estimate_tokens
+
+
+# Language-specific import patterns keyed by file extension.
+_IMPORT_PATTERNS: dict[str, list[re.Pattern]] = {
+    ".py": [
+        re.compile(r"^from\s+([\w.]+)"),
+        re.compile(r"^import\s+([\w.]+)"),
+    ],
+    ".js": [
+        re.compile(r"""import\s+['"]([^'"]+)['"]"""),
+        re.compile(r"""from\s+['"]([^'"]+)['"]"""),
+    ],
+    ".jsx": [
+        re.compile(r"""import\s+['"]([^'"]+)['"]"""),
+        re.compile(r"""from\s+['"]([^'"]+)['"]"""),
+    ],
+    ".ts": [
+        re.compile(r"""import\s+['"]([^'"]+)['"]"""),
+        re.compile(r"""from\s+['"]([^'"]+)['"]"""),
+    ],
+    ".tsx": [
+        re.compile(r"""import\s+['"]([^'"]+)['"]"""),
+        re.compile(r"""from\s+['"]([^'"]+)['"]"""),
+    ],
+    ".java": [
+        re.compile(r"^import\s+([\w.*]+)\s*;"),
+    ],
+    ".rs": [
+        re.compile(r"^use\s+([\w:]+)"),
+    ],
+    ".go": [
+        re.compile(r"""import\s+['"]([^'"]+)['"]"""),
+    ],
+    ".cs": [
+        re.compile(r"^using\s+([\w.]+)"),
+    ],
+    ".c": [
+        re.compile(r"""#include\s+[<"]([^'">]+)[>"]"""),
+    ],
+    ".cpp": [
+        re.compile(r"""#include\s+[<"]([^'">]+)[>"]"""),
+    ],
+    ".cc": [
+        re.compile(r"""#include\s+[<"]([^'">]+)[>"]"""),
+    ],
+    ".h": [
+        re.compile(r"""#include\s+[<"]([^'">]+)[>"]"""),
+    ],
+    ".hh": [
+        re.compile(r"""#include\s+[<"]([^'">]+)[>"]"""),
+    ],
+    ".hpp": [
+        re.compile(r"""#include\s+[<"]([^'">]+)[>"]"""),
+    ],
+}
+
+_SOURCE_EXTS = frozenset({
+    ".py", ".js", ".jsx", ".ts", ".tsx",
+    ".java", ".rs", ".go", ".cs",
+    ".c", ".cpp", ".cc", ".h", ".hh", ".hpp",
+})
 
 
 @dataclass
@@ -22,13 +84,6 @@ class ReviewChunk:
 class FileSplitter:
     chunk_budget: int = 180_000
     max_chunk_tokens: int = 200_000
-
-    IMPORT_PATTERNS = [
-        re.compile(r"^from\s+([\w.]+)"),
-        re.compile(r"^import\s+([\w.]+)"),
-        re.compile(r"""import\s+['"]([^'"]+)['"]"""),
-        re.compile(r"""from\s+['"]([^'"]+)['"]"""),
-    ]
 
     def split(self, diff: ParsedDiff) -> list[ReviewChunk]:
         total = estimate_tokens(diff.raw)
@@ -55,6 +110,18 @@ class FileSplitter:
             )
         ]
 
+    def _patterns_for(self, path: str) -> list[re.Pattern]:
+        """Return import patterns matching the file extension."""
+        ext = Path(path).suffix
+        return _IMPORT_PATTERNS.get(ext, [])
+
+    def _normalise_ref(self, ref: str) -> str:
+        """Normalise an import reference to dotted module form."""
+        ref = ref.replace("/", ".").replace("::", ".")
+        for ext in _SOURCE_EXTS:
+            ref = ref.removesuffix(ext)
+        return ref
+
     def _dependency_groups(self, diff: ParsedDiff) -> list[list[str]]:
         paths = list(diff.files)
         if not paths:
@@ -72,6 +139,9 @@ class FileSplitter:
         adjacency: dict[str, set[str]] = {p: set() for p in paths}
 
         for path in paths:
+            patterns = self._patterns_for(path)
+            if not patterns:
+                continue
             change = diff.file_changes.get(path)
             if not change or not change.raw_diff:
                 continue
@@ -79,11 +149,11 @@ class FileSplitter:
                 if not (line.startswith("+") or line.startswith("-")):
                     continue
                 content = line[1:].strip()
-                for pattern in self.IMPORT_PATTERNS:
+                for pattern in patterns:
                     m = pattern.match(content)
                     if not m:
                         continue
-                    ref = m.group(1).replace("/", ".").removesuffix(".py")
+                    ref = self._normalise_ref(m.group(1))
                     target = module_to_path.get(ref) or module_to_path.get(ref.split(".")[0])
                     if target and target in path_set and target != path:
                         adjacency[path].add(target)
@@ -232,7 +302,9 @@ class FileSplitter:
         return chunks
 
     def _path_to_module(self, path: str) -> str:
-        p = path.replace("/", ".").removesuffix(".py").removesuffix(".ts").removesuffix(".js")
+        p = path.replace("/", ".").replace("\\", ".")
+        for ext in _SOURCE_EXTS:
+            p = p.removesuffix(ext)
         if p.endswith(".__init__"):
             p = p[: -len(".__init__")]
         return p
