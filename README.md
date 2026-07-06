@@ -180,6 +180,19 @@ git tag v0.2.0
 git push origin v0.2.0
 ```
 
+## Releases (CD)
+
+Pushing a semver tag triggers [`.github/workflows/cd.yml`](.github/workflows/cd.yml):
+
+1. Runs the test suite
+2. Creates a [GitHub Release](https://github.com/Team-Deepiri/deepiri-sorge/releases)
+3. Publishes `ghcr.io/team-deepiri/deepiri-sorge:<tag>`
+
+```bash
+git tag v0.2.0
+git push origin v0.2.0
+```
+
 Consumer workflows should pin the same tag for `uses:` and `bot_ref:`.
 
 ## License

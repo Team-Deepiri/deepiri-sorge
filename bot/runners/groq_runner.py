@@ -1,3 +1,7 @@
+"""Groq runner using the OpenAI-compatible chat completions API."""
+
+from __future__ import annotations
+
 import os
 import time
 
