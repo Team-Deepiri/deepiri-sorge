@@ -1,11 +1,12 @@
 /**
- * Sorge webhook dispatcher — receives GitHub App pull_request events
- * and triggers the central review workflow via repository_dispatch.
+ * Sorge webhook dispatcher — triggers review only when @sorge is mentioned
+ * on a PR comment (issue_comment event).
  *
  * Env vars:
  *   GITHUB_WEBHOOK_SECRET    — HMAC secret for verifying webhook payloads
  *   GITHUB_DISPATCH_TOKEN    — PAT or App token with repo scope for dispatch API
  *   SORGE_DISPATCH_REPO      — Target repo for repository_dispatch (default: Team-Deepiri/deepiri-sorge)
+ *   SORGE_BOT_LOGIN          — Extra mention handle if bot login is not "sorge"
  *
  * Deploy: npx wrangler deploy
  */
@@ -31,18 +32,30 @@ async function verifySignature(body, signature, secret) {
   return crypto.subtle.verify("HMAC", key, sigBytes, enc.encode(body));
 }
 
-async function dispatchReview(env, payload) {
-  const DISPATCH_REPO = env.SORGE_DISPATCH_REPO || "Team-Deepiri/deepiri-sorge";
-  const pr = payload.pull_request;
-  const repo = payload.repository.full_name;
-  const installationId = payload.installation?.id;
+function escapeRegex(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
-  if (!pr || !installationId) {
-    return { skipped: true, reason: "missing pr or installation" };
+/** True when a PR comment body @-mentions Sorge. */
+export function mentionsSorge(body, extraLogin) {
+  if (!body || typeof body !== "string") return false;
+
+  const handles = ["sorge"];
+  if (extraLogin) {
+    handles.push(extraLogin.replace(/^@/, ""));
   }
 
-  if (pr.head?.repo?.full_name !== pr.base?.repo?.full_name) {
-    return { skipped: true, reason: "fork PR — same-repo only by default" };
+  return handles.some((handle) => {
+    const escaped = escapeRegex(handle);
+    // @sorge, @sorge[bot], @sorge-ai, etc.
+    const pattern = new RegExp(`@${escaped}(-[\\w-]+)?(\\[bot\\])?\\b`, "i");
+    return pattern.test(body);
+  });
+}
+
+async function dispatchReview(env, { repo, prNumber, installationId, trigger }) {
+  if (!repo || !prNumber || !installationId) {
+    return { skipped: true, reason: "missing repo, pr_number, or installation" };
   }
 
   const token = env.GITHUB_DISPATCH_TOKEN;
@@ -50,8 +63,10 @@ async function dispatchReview(env, payload) {
     return { error: "GITHUB_DISPATCH_TOKEN not configured" };
   }
 
+  const dispatchRepo = env.SORGE_DISPATCH_REPO || "Team-Deepiri/deepiri-sorge";
+
   const res = await fetch(
-    `https://api.github.com/repos/${DISPATCH_REPO}/dispatches`,
+    `https://api.github.com/repos/${dispatchRepo}/dispatches`,
     {
       method: "POST",
       headers: {
@@ -64,9 +79,10 @@ async function dispatchReview(env, payload) {
         event_type: DISPATCH_EVENT,
         client_payload: {
           repo,
-          pr_number: pr.number,
+          pr_number: prNumber,
           installation_id: installationId,
-          action: payload.action,
+          trigger: trigger || "mention",
+          force: trigger === "mention",
         },
       }),
     },
@@ -77,7 +93,38 @@ async function dispatchReview(env, payload) {
     return { error: `dispatch failed: ${res.status} ${text}` };
   }
 
-  return { ok: true, repo, pr_number: pr.number };
+  return { ok: true, repo, pr_number: prNumber, trigger: trigger || "mention" };
+}
+
+function handleIssueComment(payload, env) {
+  if (payload.action !== "created") {
+    return { skipped: true, reason: "not a new comment", action: payload.action };
+  }
+
+  const issue = payload.issue;
+  if (!issue?.pull_request) {
+    return { skipped: true, reason: "comment is not on a pull request" };
+  }
+
+  const comment = payload.comment;
+  if (!comment?.body) {
+    return { skipped: true, reason: "empty comment" };
+  }
+
+  if (comment.user?.type === "Bot") {
+    return { skipped: true, reason: "ignore bot comments" };
+  }
+
+  if (!mentionsSorge(comment.body, env.SORGE_BOT_LOGIN)) {
+    return { skipped: true, reason: "no @sorge mention" };
+  }
+
+  return dispatchReview(env, {
+    repo: payload.repository.full_name,
+    prNumber: issue.number,
+    installationId: payload.installation?.id,
+    trigger: "mention",
+  });
 }
 
 export default {
@@ -109,20 +156,13 @@ export default {
       });
     }
 
-    if (event !== "pull_request") {
-      return new Response(JSON.stringify({ skipped: true, event }), {
-        headers: { "Content-Type": "application/json" },
-      });
+    let result;
+    if (event === "issue_comment") {
+      result = await handleIssueComment(payload, env);
+    } else {
+      result = { skipped: true, event, reason: "only @sorge mentions trigger review" };
     }
 
-    const action = payload.action;
-    if (!["opened", "synchronize", "reopened"].includes(action)) {
-      return new Response(JSON.stringify({ skipped: true, action }), {
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-
-    const result = await dispatchReview(env, payload);
     return new Response(JSON.stringify(result), {
       status: result.error ? 500 : 200,
       headers: { "Content-Type": "application/json" },
