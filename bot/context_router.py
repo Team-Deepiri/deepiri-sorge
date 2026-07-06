@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from bot.config import RoutingConfig
 from bot.decision_engine import Action
 from bot.decision_engine import PRMetrics
 from bot.file_splitter import ReviewChunk
@@ -28,14 +29,13 @@ class ContextRouter:
     def __init__(
         self,
         *,
-        small_threshold: int = 3_700,
-        max_chunk_tokens: int = 200_000,
+        routing: RoutingConfig,
         groq_enabled: bool = True,
         openrouter_enabled: bool = True,
         gemini_enabled: bool = True,
     ):
-        self.small_threshold = small_threshold
-        self.max_chunk_tokens = max_chunk_tokens
+        self.small_threshold = routing.small_pr_threshold
+        self.max_chunk_tokens = routing.medium_pr_threshold
         self.groq_enabled = groq_enabled
         self.openrouter_enabled = openrouter_enabled
         self.gemini_enabled = gemini_enabled

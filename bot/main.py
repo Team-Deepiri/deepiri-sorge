@@ -197,8 +197,7 @@ def run_auto_review(
     chunks = splitter.split(parsed_diff)
 
     router = ContextRouter(
-        small_threshold=config.routing.small_pr_threshold,
-        max_chunk_tokens=config.routing.medium_pr_threshold,
+        routing=config.routing,
         groq_enabled=bool(config.groq.enabled),
         openrouter_enabled=bool(config.openrouter.enabled),
         gemini_enabled=bool(config.gemini.enabled),
