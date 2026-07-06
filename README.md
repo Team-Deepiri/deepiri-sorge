@@ -1,9 +1,9 @@
 # deepiri-sorge
 
-**Distributed, event-driven AI PR review bot - runs on GitHub Actions for $0-10/month**
+**On-demand AI PR review bot for GitHub — powered by Gemini, OpenRouter, and Groq**
 
 ```
-GitHub PR Event → GitHub Action (FREE CPU) → Decision Engine → [CPU Quantized Model | Skip | GPU Fallback] → PR Comment
+PR @sorge mention → Cloudflare Worker → repository_dispatch → Decision Engine → [Skip | Groq | OpenRouter | Gemini] → PR Comment
 ```
 
 ## The Problem
@@ -16,99 +16,74 @@ Traditional AI code review bots require:
 
 ## The Solution: deepiri-sorge
 
-A GitHub-native, distributed AI review bot that:
+A GitHub-native, on-demand AI review bot that:
 
-1. **Runs entirely in GitHub Actions** - Free compute for most PRs
-2. **Uses quantized CPU models** - 7B models that run on standard runners
-3. **Filters aggressively** - Skips 70-90% of PRs that don't need AI
-4. **Optional GPU fallback** - Only for large/complex diffs
+1. **Runs in GitHub Actions** — Zero infrastructure to manage
+2. **Routes to optimal LLM** — Groq for small PRs, OpenRouter for medium, Gemini for large
+3. **Filters aggressively** — Skips 70-90% of PRs that don't need AI (when running automatic mode)
+4. **Provider failover** — Falls back through the provider chain if quotas are exhausted
 
 ### Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                        GitHub PR Event                       │
-│                  (push / PR open / update)                   │
-└─────────────────────────────┬───────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                   GitHub Action Runner                        │
-│               (per-repo CPU execution)                        │
-└─────────────────────────────┬───────────────────────────────┘
-                              │
-              ┌───────────────┴───────────────┐
-              │                               │
-              ▼                               ▼
-┌─────────────────────────┐     ┌─────────────────────────────┐
-│    Decision Engine       │     │    Diff Pre-filtering        │
-│  (rules + complexity)    │     │ (trivial/docs/small PRs)     │
-└───────────┬─────────────┘     └──────────────┬──────────────┘
-            │                                   │
-            │ small PR                          │ skip
-            ▼                                   ▼
-┌─────────────────────────┐         ┌───────────────────────────┐
-│   Quantized CPU Model   │         │     Skip / Light Comment  │
-│       (7B Q4/Q5)        │         └───────────────────────────┘
-└───────────┬─────────────┘
-            │
-            │ complex / large PR
-            ▼
-┌─────────────────────────────────────────────────────────────┐
-│              GPU Runner (Optional)                           │
-│         (RunPod / Vast.ai / Spot Instance)                   │
-└─────────────────────────────┬───────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│              Structured Review Output                        │
-│           (summary, issues, recommendations)                  │
-└─────────────────────────────┬───────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    GitHub PR Comment                         │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────┐
+│          PR comment "@sorge review"           │
+└─────────────────────┬───────────────────────┘
+                      │
+                      ▼
+┌─────────────────────────────────────────────┐
+│         Cloudflare Worker                    │
+│   (checks for @sorge, dispatches review)     │
+└─────────────────────┬───────────────────────┘
+                      │
+                      ▼
+┌─────────────────────────────────────────────┐
+│           Decision Engine                    │
+│  (line count, file types, security scan)     │
+└────────┬──────────────┬──────────────┬───────┘
+         │              │              │
+         ▼              ▼              ▼
+   ┌──────────┐  ┌────────────┐  ┌──────────┐
+   │   Groq   │  │ OpenRouter │  │  Gemini  │
+   │ (small)  │  │ (medium)   │  │ (large)  │
+   └──────────┘  └────────────┘  └──────────┘
+         │              │              │
+         └──────────────┴──────────────┘
+                      │
+                      ▼
+┌─────────────────────────────────────────────┐
+│          Structured Review Output             │
+│      (summary, issues, recommendations)       │
+└─────────────────────┬───────────────────────┘
+                      │
+                      ▼
+┌─────────────────────────────────────────────┐
+│               GitHub PR Comment              │
+└─────────────────────────────────────────────┘
 ```
 
 ## Features
 
-- **Zero-cost default**: Uses GitHub Actions free minutes for CPU inference
-- **Quantized models**: 7B models via llama.cpp, runs on 4-6GB RAM
-- **Smart filtering**: Skips docs-only, small, trivial PRs
-- **Distributed**: Each repo runs independently - no central server
-- **Reusable workflows**: One workflow template, deploy to 20+ repos
-- **GPU fallback**: Optional serverless GPU for complex diffs
-- **Configurable**: Per-repo settings via `sorge.toml`
-- **Cost estimation**: Built-in cost tracking
+- **On-demand reviews**: Triggered by commenting `@sorge` on a PR — no auto-run on every push
+- **Multiple LLM providers**: Routes PRs to Groq, OpenRouter, or Gemini based on size
+- **Automatic failover**: Falls through the provider chain if quotas are exhausted
+- **Smart filtering**: Skips docs-only, dependency-only, test-only, and trivial PRs (overridable with `@sorge`)
+- **Configurable routing**: Per-repo thresholds via `sorge.toml` and environment variables
+- **GitHub App support**: Webhook-based dispatch via Cloudflare Worker — no YAML in consumer repos
+- **Provider-agnostic**: Swap providers or add new ones via the runner interface
+- **Cost tracking**: Built-in quota management per provider
 
 ## Quick Start
 
-### 1. Add to your repo
+### Recommended: GitHub App (zero YAML in consumer repos)
 
-Copy [`.github/workflows/consumer-pr-review.example.yml`](.github/workflows/consumer-pr-review.example.yml) to your repo as `.github/workflows/pr_review.yml` and **pin a release tag** (not `@main`):
+1. Install the **Sorge GitHub App** on your org or repository.
+2. Comment `@sorge` on a PR when you want a review (on-demand only — no auto-run on every push).
+3. Optionally add `sorge.toml` in the repo root for filters and routing.
 
-```yaml
-jobs:
-  review:
-    uses: Team-Deepiri/deepiri-sorge/.github/workflows/sorge-review.yml@v0.1.0
-    with:
-      bot_ref: v0.1.0
-    secrets:
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-```
+No workflow files, no API keys in consumer repos — see [docs/GITHUB_APP.md](docs/GITHUB_APP.md).
 
-Or run via Docker after a release:
-
-```bash
-docker run --rm -e GITHUB_TOKEN -e GROQ_API_KEY ghcr.io/team-deepiri/deepiri-sorge:v0.1.0 \
-  --diff pr.diff --repo owner/repo --pr-number 1
-```
-
-### 2. Configure (optional)
+### Self-hosted
 
 Create `sorge.toml` in your repo root:
 
@@ -120,16 +95,17 @@ enabled = true
 min_lines = 20
 skip_docs = true
 skip_deps = true
-max_cpu_lines = 500
+skip_tests = false
 
 [review]
 style = "concise"  # concise | detailed | minimal
-languages = ["python", "javascript", "typescript"]
+include_security = true
+include_performance = true
 
-[gpu]
-enabled = false
-threshold_lines = 1000
-endpoint = ""  # Your RunPod/Vast.ai endpoint
+[routing]
+small_pr_threshold = 5000   # Groq for small PRs
+medium_pr_threshold = 200000 # OpenRouter for medium PRs
+large_pr_threshold = 200000  # Gemini for large PRs
 ```
 
 ## Usage
@@ -138,67 +114,70 @@ endpoint = ""  # Your RunPod/Vast.ai endpoint
 
 ```bash
 # Install dependencies
-pip install -r requirements.txt
+poetry install
 
-# Download quantized model
-python -m bot.download_model
-
-# Run locally
+# Run locally (requires GOOGLE_API_KEY or OPENROUTER_API_KEY or GROQ_API_KEY in .env)
 python -m bot.main --diff tests/fixtures/sample.diff
 
 # Run tests
 pytest tests/
 ```
 
-### Docker
-
-```bash
-# CPU version (free tier)
-docker build -f docker/Dockerfile.cpu -t sorge-cpu .
-docker run sorge-cpu --diff pr.diff
-
-# GPU version
-docker build -f docker/Dockerfile.gpu -t sorge-gpu .
-docker run --gpus all sorge-gpu --diff pr.diff
-```
-
 ## How It Works
 
-1. **PR Event Triggered** → GitHub Actions runs on `pull_request` events
-2. **Diff Extraction** → Fetches and formats the PR diff
-3. **Decision Engine** → Rules-based filtering:
-   - Lines < 20 → Skip
-   - Docs-only → Skip  
-   - Dependencies → Skip
-   - Small PRs → CPU review
-   - Large PRs → GPU fallback (if enabled)
-4. **AI Review** → Runs quantized model or calls GPU endpoint
-5. **Post Comment** → Formats and posts review to PR
+1. **`@sorge` Comment** → Someone comments `@sorge` on a PR; the Cloudflare Worker detects the mention
+2. **Dispatch** → Worker sends a `repository_dispatch` to the central `deepiri-sorge` repo
+3. **Diff Extraction** → Fetches and parses the PR diff
+4. **Filtering** → Decision engine applies rules: skip docs-only, deps-only, test-only, or below min_lines (overridden when triggered via `@sorge`)
+5. **Routing** → Routes the diff to the optimal provider based on token estimate
+6. **Review** → Provider (Groq / OpenRouter / Gemini) generates structured review
+7. **Fallback** → If the primary provider fails or quota is exhausted, falls through the preference chain
+8. **Post Comment** → Formats and posts the review to the PR
 
 ## Cost Breakdown
 
-| Scenario | Monthly Cost |
-|----------|-------------|
-| 100 small PRs (CPU) | $0 |
-| 50 medium PRs (CPU) | $0 |
-| 10 large PRs (GPU) | ~$5-8 |
-| 20 repos, moderate usage | **$0-10** |
+All providers are used via their free tiers. No paid API usage is required.
+
+| Provider | Free Tier Limit |
+|----------|----------------|
+| Groq | 1000 requests / day |
+| OpenRouter | 50 requests / day |
+| Gemini 2.5 Flash | 20 requests / day |
+
+**Monthly cost: $0** — no GPU servers, no inference infrastructure, no paid API keys needed.
 
 ## Project Structure
 
 ```
 deepiri-sorge/
-├── .github/workflows/      # GitHub Actions
-├── bot/                    # Core bot code
-│   ├── main.py            # Entry point
-│   ├── decision_engine.py # PR filtering
-│   ├── cpu_reviewer.py    # Quantized model runner
-│   ├── gpu_runner.py      # Optional GPU endpoint
-│   ├── comment_poster.py  # GitHub API integration
-│   └── prompts/           # Review templates
-├── docker/                # Container builds
-├── tests/                 # Test suite
-└── docs/                  # Documentation
+├── .github/workflows/       # GitHub Actions workflows
+├── bot/                     # Core bot code
+│   ├── main.py             # Entry point & dispatch
+│   ├── config.py           # Configuration (Pydantic)
+│   ├── decision_engine.py  # PR filtering & routing
+│   ├── context_router.py   # Token-aware provider routing
+│   ├── comment_poster.py   # GitHub API integration
+│   ├── runners/            # LLM provider runners
+│   │   ├── gemini_runner.py
+│   │   ├── openrouter_runner.py
+│   │   └── groq_runner.py
+│   └── prompts/            # Review templates
+├── worker/                 # Cloudflare Worker (webhook dispatch)
+├── tests/                  # Test suite
+└── docs/                   # Documentation
+```
+
+## Releases (CD)
+
+Pushing a semver tag triggers [`.github/workflows/cd.yml`](.github/workflows/cd.yml):
+
+1. Runs the test suite
+2. Creates a [GitHub Release](https://github.com/Team-Deepiri/deepiri-sorge/releases)
+3. Publishes `ghcr.io/team-deepiri/deepiri-sorge:<tag>`
+
+```bash
+git tag v0.2.0
+git push origin v0.2.0
 ```
 
 ## Releases (CD)
