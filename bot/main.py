@@ -311,6 +311,18 @@ def main() -> None:
         )
         if not review_result:
             logger.critical("All providers exhausted — review failed")
+            if not args.dry_run and github_token and args.repo and args.pr_number:
+                CommentPoster(github_token).post_comment(
+                    args.repo,
+                    args.pr_number,
+                    "## Sorge AI Code Review\n\n"
+                    "> :x: **Review failed** — all AI providers were exhausted or unavailable.\n\n"
+                    "Possible causes:\n"
+                    "- API key misconfiguration (check `GOOGLE_API_KEY`, `OPENROUTER_API_KEY`, `GROQ_API_KEY`)\n"
+                    "- Rate limits exceeded (check quota settings in `sorge.toml`)\n"
+                    "- Network errors reaching the provider APIs\n\n"
+                    "Check the [Actions logs](https://github.com/Team-Deepiri/deepiri-sorge/actions) for more details.",
+                )
             sys.exit(2)
         logger.info(f"Review complete: {len(review_result.issues)} issues found")
     else:
@@ -358,6 +370,18 @@ def main() -> None:
 
         if not review_result:
             logger.critical(f"Review failed: no result from {effective_mode}")
+            if not args.dry_run and github_token and args.repo and args.pr_number:
+                CommentPoster(github_token).post_comment(
+                    args.repo,
+                    args.pr_number,
+                    f"## Sorge AI Code Review\n\n"
+                    f"> :x: **Review failed** — provider `{effective_mode}` returned no result.\n\n"
+                    "Possible causes:\n"
+                    f"- `{effective_mode}` API key missing or invalid\n"
+                    "- Rate limits or quota exhaustion\n"
+                    "- Network errors reaching the provider\n\n"
+                    "Check the [Actions logs](https://github.com/Team-Deepiri/deepiri-sorge/actions) for more details.",
+                )
             sys.exit(2)
         logger.info(f"Review complete: {len(review_result.issues)} issues found")
 
