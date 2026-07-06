@@ -28,9 +28,10 @@ class ReviewResult:
     tokens_used: int | None = None
     review_type: str = "api"
     parse_warning: str | None = None
+    routing_meta: dict | None = None
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "summary": self.summary,
             "parse_warning": self.parse_warning,
             "issues": [
@@ -51,6 +52,9 @@ class ReviewResult:
             "tokens_used": self.tokens_used,
             "review_type": self.review_type,
         }
+        if self.routing_meta:
+            d["routing_meta"] = self.routing_meta
+        return d
 
 
 def issues_from_parsed(parsed: dict) -> list[ReviewIssue]:

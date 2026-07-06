@@ -18,12 +18,8 @@ pydantic = ">=2.5.0"
 numpy = ">=1.24.0"
 scikit-learn = ">=1.3.0"
 python-dotenv = ">=1.0.0"
-llama-cpp-python = { version = ">=0.2.0", optional = true }
+PyJWT = { version = ">=2.8.0", extras = ["crypto"] }
 rich = "^15.0.0"
-
-[tool.poetry.extras]
-llama = ["llama-cpp-python"]
-all = ["llama-cpp-python"]
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=7.4.0"

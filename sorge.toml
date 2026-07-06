@@ -26,13 +26,20 @@ endpoint = "https://openrouter.ai/api/v1/chat/completions"
 
 [groq]
 enabled = true
-model = "qwen/qwen3-32b"
+model = "openai/gpt-oss-120b"
 endpoint = "https://api.groq.com/openai/v1/chat/completions"
 
 [routing]
-small_pr_threshold = 3700
-medium_pr_threshold = 50000
-large_pr_threshold = 50000
+small_pr_threshold = 5000
+medium_pr_threshold = 200000
+large_pr_threshold = 200000
+chunk_budget = 180000
+
+[quota]
+gemini_rpd = 20
+gpt_rpd = 1000
+openrouter_rpd = 50
+warn_at_pct = 0.8
 
 [cache]
 enabled = true

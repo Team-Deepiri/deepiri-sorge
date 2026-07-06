@@ -86,7 +86,6 @@ jobs:
           generate_release_notes: true
           files: |
             sorge.toml
-            .github/workflows/consumer-pr-review.example.yml
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
