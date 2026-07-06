@@ -2,17 +2,29 @@
 
 ## Quick Comparison
 
-| | Local Development | Production (GitHub Actions) |
-|---|-------------------|----------------------------|
-| GitHub Token | Your PAT or `GITHUB_TOKEN` env | Auto-available |
-| API Key | Set in `.env` | Set in GitHub Secrets |
-| Config | `sorge.toml` | `sorge.toml` in repo |
+| | Local Development | Production (GitHub App) |
+| |---|-------------------|----------------------------|
+| | GitHub Token | Your PAT or `GITHUB_TOKEN` env | App installation token (auto) |
+| | API Key | Set in `.env` | Set in GitHub Secrets |
+| | Config | `sorge.toml` | `sorge.toml` in repo |
 
 ---
 
-## Option 1: Production Setup (GitHub Actions)
+## Option 1: GitHub App (Recommended — no YAML in consumer repos)
 
-This is what you want for your repo's PRs to be auto-reviewed.
+This is the primary way to use Sorge on external repositories. Reviews are triggered on-demand by commenting `@sorge` on a PR.
+
+1. Install the **Sorge GitHub App** on your org or repository.
+2. Comment `@sorge` on any PR you want reviewed.
+3. Optionally add `sorge.toml` in the repo root for custom filters and routing.
+
+No workflow files or API keys needed in your repo. See [docs/GITHUB_APP.md](GITHUB_APP.md) for full setup details.
+
+---
+
+## Option 2: Production Setup (GitHub Actions — dogfooding only)
+
+This workflow lives inside the `deepiri-sorge` repo to review its own PRs automatically on open/sync. External repos should use the GitHub App instead.
 
 ### 1. Add API Key Secrets
 
@@ -31,13 +43,9 @@ Sorge supports multiple LLM providers. Add at least one:
 
 Copy `sorge.toml` to your repo root if you want custom config. Defaults work fine out of the box.
 
-### 3. Done!
-
-The workflow automatically runs on PRs. No other setup needed.
-
 ---
 
-## Option 2: Local Development
+## Option 3: Local Development
 
 This is for testing the bot locally before deploying.
 

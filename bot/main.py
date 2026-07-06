@@ -328,8 +328,7 @@ def main() -> None:
                     "Possible causes:\n"
                     "- API key misconfiguration (check `GOOGLE_API_KEY`, `OPENROUTER_API_KEY`, `GROQ_API_KEY`)\n"
                     "- Rate limits exceeded (check quota settings in `sorge.toml`)\n"
-                    "- Network errors reaching the provider APIs\n\n"
-                    "Check the [Actions logs](https://github.com/Team-Deepiri/deepiri-sorge/actions) for more details.",
+                    "- Network errors reaching the provider APIs\n\n",
                 )
             sys.exit(2)
         logger.info(f"Review complete: {len(review_result.issues)} issues found")
@@ -387,8 +386,7 @@ def main() -> None:
                     "Possible causes:\n"
                     f"- `{effective_mode}` API key missing or invalid\n"
                     "- Rate limits or quota exhaustion\n"
-                    "- Network errors reaching the provider\n\n"
-                    "Check the [Actions logs](https://github.com/Team-Deepiri/deepiri-sorge/actions) for more details.",
+                    "- Network errors reaching the provider\n\n",
                 )
             sys.exit(2)
         logger.info(f"Review complete: {len(review_result.issues)} issues found")

@@ -1,9 +1,9 @@
 # deepiri-sorge
 
-**Distributed, event-driven AI PR review bot for GitHub — powered by Gemini, OpenRouter, and Groq**
+**On-demand AI PR review bot for GitHub — powered by Gemini, OpenRouter, and Groq**
 
 ```
-GitHub PR Event → GitHub Action → Decision Engine → [Skip | Groq | OpenRouter | Gemini] → PR Comment
+PR @sorge mention → Cloudflare Worker → repository_dispatch → Decision Engine → [Skip | Groq | OpenRouter | Gemini] → PR Comment
 ```
 
 ## The Problem
@@ -16,25 +16,24 @@ Traditional AI code review bots require:
 
 ## The Solution: deepiri-sorge
 
-A GitHub-native, distributed AI review bot that:
+A GitHub-native, on-demand AI review bot that:
 
 1. **Runs in GitHub Actions** — Zero infrastructure to manage
 2. **Routes to optimal LLM** — Groq for small PRs, OpenRouter for medium, Gemini for large
-3. **Filters aggressively** — Skips 70-90% of PRs that don't need AI
+3. **Filters aggressively** — Skips 70-90% of PRs that don't need AI (when running automatic mode)
 4. **Provider failover** — Falls back through the provider chain if quotas are exhausted
 
 ### Architecture
 
 ```
 ┌─────────────────────────────────────────────┐
-│              GitHub PR Event                 │
-│         (opened / synchronize / reopened)    │
+│          PR comment "@sorge review"           │
 └─────────────────────┬───────────────────────┘
                       │
                       ▼
 ┌─────────────────────────────────────────────┐
-│         GitHub Actions Dispatch               │
-│     (via Cloudflare Worker webhook proxy)     │
+│         Cloudflare Worker                    │
+│   (checks for @sorge, dispatches review)     │
 └─────────────────────┬───────────────────────┘
                       │
                       ▼
@@ -65,11 +64,12 @@ A GitHub-native, distributed AI review bot that:
 
 ## Features
 
+- **On-demand reviews**: Triggered by commenting `@sorge` on a PR — no auto-run on every push
 - **Multiple LLM providers**: Routes PRs to Groq, OpenRouter, or Gemini based on size
 - **Automatic failover**: Falls through the provider chain if quotas are exhausted
-- **Smart filtering**: Skips docs-only, dependency-only, test-only, and trivial PRs
+- **Smart filtering**: Skips docs-only, dependency-only, test-only, and trivial PRs (overridable with `@sorge`)
 - **Configurable routing**: Per-repo thresholds via `sorge.toml` and environment variables
-- **GitHub App support**: Optional webhook-based dispatch via Cloudflare Worker
+- **GitHub App support**: Webhook-based dispatch via Cloudflare Worker — no YAML in consumer repos
 - **Provider-agnostic**: Swap providers or add new ones via the runner interface
 - **Cost tracking**: Built-in quota management per provider
 
@@ -83,12 +83,7 @@ A GitHub-native, distributed AI review bot that:
 
 No workflow files, no API keys in consumer repos — see [docs/GITHUB_APP.md](docs/GITHUB_APP.md).
 
-No workflow files or API keys are required in consumer repos — see [docs/GITHUB_APP.md](docs/GITHUB_APP.md).
-
-```bash
-docker run --rm -e GITHUB_TOKEN -e GROQ_API_KEY ghcr.io/team-deepiri/deepiri-sorge:v0.1.0 \
-  --diff pr.diff --repo owner/repo --pr-number 1
-```
+### Self-hosted
 
 Create `sorge.toml` in your repo root:
 
@@ -128,31 +123,28 @@ python -m bot.main --diff tests/fixtures/sample.diff
 pytest tests/
 ```
 
-### Docker
-
-```bash
-docker build -f docker/Dockerfile.cpu -t sorge-cpu .
-docker run sorge-cpu --diff pr.diff
-```
-
 ## How It Works
 
-1. **PR Event** → GitHub Actions workflow or Cloudflare Worker webhook dispatches the review
-2. **Diff Extraction** → Fetches and parses the PR diff
-3. **Filtering** → Decision engine applies rules: skip docs-only, deps-only, test-only, or below min_lines
-4. **Routing** → Routes the diff to the optimal provider based on token estimate
-5. **Review** → Provider (Groq / OpenRouter / Gemini) generates structured review
-6. **Fallback** → If the primary provider fails or quota is exhausted, falls through the preference chain
-7. **Post Comment** → Formats and posts the review to the PR
+1. **`@sorge` Comment** → Someone comments `@sorge` on a PR; the Cloudflare Worker detects the mention
+2. **Dispatch** → Worker sends a `repository_dispatch` to the central `deepiri-sorge` repo
+3. **Diff Extraction** → Fetches and parses the PR diff
+4. **Filtering** → Decision engine applies rules: skip docs-only, deps-only, test-only, or below min_lines (overridden when triggered via `@sorge`)
+5. **Routing** → Routes the diff to the optimal provider based on token estimate
+6. **Review** → Provider (Groq / OpenRouter / Gemini) generates structured review
+7. **Fallback** → If the primary provider fails or quota is exhausted, falls through the preference chain
+8. **Post Comment** → Formats and posts the review to the PR
 
 ## Cost Breakdown
 
-| Scenario | Monthly Cost |
-|----------|-------------|
-| 100 small PRs (Groq free tier) | $0 |
-| 50 medium PRs (OpenRouter) | ~$2-5 |
-| 10 large PRs (Gemini free tier) | $0 |
-| Mixed usage, all providers | **$0-10** |
+All providers are used via their free tiers. No paid API usage is required.
+
+| Provider | Free Tier Limit |
+|----------|----------------|
+| Groq | 1000 requests / day |
+| OpenRouter | 50 requests / day |
+| Gemini 2.5 Flash | 20 requests / day |
+
+**Monthly cost: $0** — no GPU servers, no inference infrastructure, no paid API keys needed.
 
 ## Project Structure
 
@@ -171,7 +163,6 @@ deepiri-sorge/
 │   │   └── groq_runner.py
 │   └── prompts/            # Review templates
 ├── worker/                 # Cloudflare Worker (webhook dispatch)
-├── docker/                 # Container builds
 ├── tests/                  # Test suite
 └── docs/                   # Documentation
 ```
