@@ -12,10 +12,10 @@
 
 ## Option 1: GitHub App (Recommended — no YAML in consumer repos)
 
-This is the primary way to use Sorge on external repositories. Reviews are triggered on-demand by commenting `@sorge` on a PR.
+This is the primary way to use Sorge on external repositories. Reviews are triggered on-demand by commenting `/sorge` on a PR.
 
 1. Install the **Sorge GitHub App** on your org or repository.
-2. Comment `@sorge` on any PR you want reviewed.
+2. Comment `/sorge` on any PR you want reviewed.
 3. Optionally add `sorge.toml` in the repo root for custom filters and routing.
 
 No workflow files or API keys needed in your repo. See [docs/GITHUB_APP.md](GITHUB_APP.md) for full setup details.

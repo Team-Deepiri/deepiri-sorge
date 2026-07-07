@@ -55,7 +55,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Run review even when filters would skip (e.g. @sorge mention)",
+        help="Run review even when filters would skip (e.g. /sorge command)",
     )
     return parser.parse_args()
 
