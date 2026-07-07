@@ -57,6 +57,16 @@ jobs:
             echo "FORCE_FLAG=" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Post starting message
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          curl -fsSL -X POST \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${{ steps.inputs.outputs.REPO }}/issues/${{ steps.inputs.outputs.PR_NUMBER }}/comments" \
+            -d '{"body": "Starting AI review..."}' >/dev/null
+
       - name: Checkout sorge
         uses: actions/checkout@v4
 

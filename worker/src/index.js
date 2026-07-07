@@ -53,28 +53,6 @@ export function hasSorgeSlashCommand(body, extraLogin) {
   });
 }
 
-async function postComment(token, repo, issueNumber, body) {
-  const res = await fetch(
-    `https://api.github.com/repos/${repo}/issues/${issueNumber}/comments`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "Content-Type": "application/json",
-        "User-Agent": "sorge-webhook-worker",
-      },
-      body: JSON.stringify({ body }),
-    },
-  );
-  if (!res.ok) {
-    const text = await res.text();
-    return { error: `comment failed: ${res.status} ${text}` };
-  }
-  return { ok: true };
-}
-
 async function dispatchReview(env, { repo, prNumber, installationId, trigger }) {
   if (!repo || !prNumber || !installationId) {
     return { skipped: true, reason: "missing repo, pr_number, or installation" };
@@ -119,7 +97,7 @@ async function dispatchReview(env, { repo, prNumber, installationId, trigger }) 
   return { ok: true, repo, pr_number: prNumber, trigger: trigger || "slash_command" };
 }
 
-async function handleIssueComment(payload, env) {
+function handleIssueComment(payload, env) {
   if (payload.action !== "created") {
     return { skipped: true, reason: "not a new comment", action: payload.action };
   }
@@ -142,17 +120,9 @@ async function handleIssueComment(payload, env) {
     return { skipped: true, reason: "no /sorge slash command" };
   }
 
-  // Post a "Starting AI review..." comment so the user knows the trigger worked
-  const token = env.GITHUB_DISPATCH_TOKEN;
-  const repo = payload.repository.full_name;
-  const prNumber = issue.number;
-  if (token) {
-    await postComment(token, repo, prNumber, "Starting AI review...");
-  }
-
   return dispatchReview(env, {
-    repo: repo,
-    prNumber: prNumber,
+    repo: payload.repository.full_name,
+    prNumber: issue.number,
     installationId: payload.installation?.id,
     trigger: "slash_command",
   });
