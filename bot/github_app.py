@@ -57,7 +57,12 @@ def get_installation_token(
     app_id: str | None = None,
     private_key: str | None = None,
 ) -> str | None:
-    """Exchange App JWT for an installation access token."""
+    """Exchange App JWT for an installation access token.
+
+    Uses raw requests (not ghapi) because ghapi sends ``Authorization: token``
+    (PAT-style) which GitHub rejects for JWTs.  GitHub App JWTs require
+    ``Authorization: Bearer``.
+    """
     app_id = app_id or os.getenv("SORGE_APP_ID", "")
     pem = _load_private_key(private_key or os.getenv("SORGE_APP_PRIVATE_KEY"))
 
@@ -71,12 +76,23 @@ def get_installation_token(
         logger.error(f"Failed to create App JWT: {e}")
         return None
 
+    url = f"https://api.github.com/app/installations/{installation_id}/access_tokens"
+    headers = {
+        "Authorization": f"Bearer {app_jwt}",
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "deepiri-sorge",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
     try:
-        api = GhApi(token=app_jwt)
-        resp = api.apps.create_installation_access_token(installation_id)
-        return resp.token
+        resp = requests.post(url, headers=headers, timeout=120)
+        resp.raise_for_status()
+        data = resp.json()
+        return data["token"]
     except Exception as e:
         logger.error(f"Failed to get installation token: {e}")
+        if isinstance(e, requests.RequestException) and e.response is not None:
+            logger.debug(f"Response: {e.response.text[:500]}")
         return None
 
 
