@@ -12,6 +12,20 @@ from bot.utils.formatting import (
 )
 
 
+def score_to_label(score: float) -> str:
+    """Map a numeric score to a human-readable label."""
+    if score >= 9:
+        return "Production-ready, minimal issues"
+    elif score >= 7:
+        return "Good quality, minor issues worth addressing"
+    elif score >= 5:
+        return "Adequate, notable issues to fix before merge"
+    elif score >= 3:
+        return "Significant problems requiring changes"
+    else:
+        return "Major issues, needs redesign or re-architecture"
+
+
 class CommentPoster:
 
     def __init__(self, token: str = ""):
@@ -73,7 +87,7 @@ class CommentPoster:
             "",
             f"**Model:** {normalize_whitespace(review.model)} "
             f"({normalize_whitespace(review.review_type)})",
-            f"**Quality Score:** {review.score:.1f}/10",
+            f"**Quality Score:** {review.score:.1f}/10 — *{score_to_label(review.score)}*",
             "",
         ]
 
