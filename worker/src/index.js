@@ -1,12 +1,12 @@
 /**
- * Sorge webhook dispatcher — triggers review only when @sorge is mentioned
+ * Sorge webhook dispatcher — triggers review only when /sorge slash command is used
  * on a PR comment (issue_comment event).
  *
  * Env vars:
  *   GITHUB_WEBHOOK_SECRET    — HMAC secret for verifying webhook payloads
  *   GITHUB_DISPATCH_TOKEN    — PAT or App token with repo scope for dispatch API
  *   SORGE_DISPATCH_REPO      — Target repo for repository_dispatch (default: Team-Deepiri/deepiri-sorge)
- *   SORGE_BOT_LOGIN          — Extra mention handle if bot login is not "sorge"
+ *   SORGE_BOT_LOGIN          — Extra command handle if bot login is not "sorge"
  *
  * Deploy: npx wrangler deploy
  */
@@ -36,19 +36,19 @@ function escapeRegex(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/** True when a PR comment body @-mentions Sorge. */
-export function mentionsSorge(body, extraLogin) {
+/** True when a PR comment body contains a /sorge slash command. */
+export function hasSorgeSlashCommand(body, extraLogin) {
   if (!body || typeof body !== "string") return false;
 
   const handles = ["sorge"];
   if (extraLogin) {
-    handles.push(extraLogin.replace(/^@/, ""));
+    handles.push(extraLogin.replace(/^\//, "").replace(/^@/, ""));
   }
 
   return handles.some((handle) => {
     const escaped = escapeRegex(handle);
-    // @sorge, @sorge[bot], @sorge-ai, etc.
-    const pattern = new RegExp(`@${escaped}(-[\\w-]+)?(\\[bot\\])?\\b`, "i");
+    // /sorge, /Sorge, /sorge-ai, etc.
+    const pattern = new RegExp(`/${escaped}(-[\\w-]+)?\\b`, "i");
     return pattern.test(body);
   });
 }
@@ -82,8 +82,8 @@ async function dispatchReview(env, { repo, prNumber, installationId, trigger }) 
           repo,
           pr_number: prNumber,
           installation_id: installationId,
-          trigger: trigger || "mention",
-          force: trigger === "mention",
+          trigger: trigger || "slash_command",
+          force: trigger === "slash_command",
         },
       }),
     },
@@ -94,7 +94,7 @@ async function dispatchReview(env, { repo, prNumber, installationId, trigger }) 
     return { error: `dispatch failed: ${res.status} ${text}` };
   }
 
-  return { ok: true, repo, pr_number: prNumber, trigger: trigger || "mention" };
+  return { ok: true, repo, pr_number: prNumber, trigger: trigger || "slash_command" };
 }
 
 function handleIssueComment(payload, env) {
@@ -116,15 +116,15 @@ function handleIssueComment(payload, env) {
     return { skipped: true, reason: "ignore bot comments" };
   }
 
-  if (!mentionsSorge(comment.body, env.SORGE_BOT_LOGIN)) {
-    return { skipped: true, reason: "no @sorge mention" };
+  if (!hasSorgeSlashCommand(comment.body, env.SORGE_BOT_LOGIN)) {
+    return { skipped: true, reason: "no /sorge slash command" };
   }
 
   return dispatchReview(env, {
     repo: payload.repository.full_name,
     prNumber: issue.number,
     installationId: payload.installation?.id,
-    trigger: "mention",
+    trigger: "slash_command",
   });
 }
 
@@ -161,7 +161,7 @@ export default {
     if (event === "issue_comment") {
       result = await handleIssueComment(payload, env);
     } else {
-      result = { skipped: true, event, reason: "only @sorge mentions trigger review" };
+      result = { skipped: true, event, reason: "only /sorge slash commands trigger review" };
     }
 
     return new Response(JSON.stringify(result), {

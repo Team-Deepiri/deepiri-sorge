@@ -5,10 +5,10 @@ Install Sorge on any org/repo **without adding workflow YAML** to consumer repos
 ## Architecture
 
 ```
-PR comment @sorge → GitHub App webhook → Cloudflare Worker → repository_dispatch → dispatch-review.yml → bot.main
+PR comment /sorge → GitHub App webhook → Cloudflare Worker → repository_dispatch → dispatch-review.yml → bot.main
 ```
 
-Reviews run **only when someone @-mentions Sorge** on a PR comment — not automatically on every push.
+Reviews run **only when someone uses /sorge** on a PR comment — not automatically on every push.
 
 ## One-time setup
 
@@ -21,7 +21,7 @@ In GitHub org settings → Developer settings → GitHub Apps:
 - **Permissions:** Pull requests (read), Contents (read), Issues (write), Metadata (read)
 - **Events:** `Issue comment`, `Installation`, `Installation repositories`
 
-  (`Issue comment` covers PR comments; Sorge ignores comments that do not mention `@sorge`.)
+  (`Issue comment` covers PR comments; Sorge ignores comments that do not contain `/sorge`.)
 
 Save **App ID** and download **private key**.
 
@@ -60,14 +60,14 @@ gh workflow run dispatch-review.yml \
 
 Install the GitHub App on target org/repos. No per-repo workflow YAML is required.
 
-## On-demand review (`@sorge`)
+## On-demand review (`/sorge`)
 
 Comment on any PR:
 
 ```text
-@sorge review this
+/sorge
 ```
 
-The GitHub App receives an `issue_comment` webhook, the Worker checks for `@sorge`, and dispatches the same central review workflow. Mention-triggered runs pass `--force` so small/docs-only filters do not skip the review.
+The GitHub App receives an `issue_comment` webhook, the Worker checks for `/sorge`, and dispatches the same central review workflow. Slash-command-triggered runs pass `--force` so small/docs-only filters do not skip the review.
 
 If your App bot login is not `sorge`, set `SORGE_BOT_LOGIN` on the Worker (e.g. `deepiri-sorge`).
