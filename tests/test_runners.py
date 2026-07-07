@@ -19,6 +19,7 @@ from bot.diff_parser import DiffParser, ParsedDiff
 from bot.runners.base import BaseRunner, ReviewResult
 from bot.runners.gemini_runner import GeminiRunner
 from bot.runners.groq_runner import GroqRunner
+from bot.runners.json_schema import REVIEW_JSON_SCHEMA, SchemaEncoder
 from bot.runners.openrouter_runner import OpenRouterRunner
 from bot.utils import cache as _cache
 
@@ -178,9 +179,6 @@ class TestBaseRunnerCache:
         assert runner._run_review.call_count == 2
 
 
-
-
-
 # ---------------------------------------------------------------------------
 # GeminiRunner
 # ---------------------------------------------------------------------------
@@ -338,3 +336,47 @@ class TestGroqRunner:
             result = runner._run_review(sample_diff)
 
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# SchemaEncoder
+# ---------------------------------------------------------------------------
+
+class TestSchemaEncoder:
+    """SchemaEncoder should produce correct provider-specific formats from a single JSON Schema."""
+
+    def test_for_openai_returns_correct_wrapper(self):
+        result = SchemaEncoder.for_openai()
+        assert result["type"] == "json_schema"
+        assert result["json_schema"]["name"] == "code_review"
+        assert result["json_schema"]["strict"] is True
+        assert result["json_schema"]["schema"] is REVIEW_JSON_SCHEMA
+
+    def test_for_gemini_returns_raw_schema(self):
+        result = SchemaEncoder.for_gemini()
+        assert result is REVIEW_JSON_SCHEMA  # same object identity
+        assert result["type"] == "object"
+        assert "properties" in result
+
+    def test_for_gemini_has_correct_structure(self):
+        result = SchemaEncoder.for_gemini()
+        assert "summary" in result["properties"]
+        assert "metrics" in result["properties"]
+        assert "issues" in result["properties"]
+        assert "best_practice_notes" in result["properties"]
+
+    def test_for_prompt_injection_returns_json_string(self):
+        result = SchemaEncoder.for_prompt_injection()
+        assert isinstance(result, str)
+        parsed = json.loads(result)
+        assert parsed["type"] == "object"
+        assert "summary" in parsed["properties"]
+
+    def test_for_openai_payload_is_serializable(self):
+        result = SchemaEncoder.for_openai()
+        # Should not raise
+        serialized = json.dumps(result)
+        assert '"strict": true' in serialized
+
+    def test_schema_name_is_consistent(self):
+        assert SchemaEncoder.SCHEMA_NAME == "code_review"

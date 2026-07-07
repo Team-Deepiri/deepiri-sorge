@@ -11,7 +11,7 @@ from loguru import logger
 from bot.config import CacheConfig
 from bot.diff_parser import ParsedDiff
 from bot.runners.base import BaseRunner, ReviewResult
-from bot.runners.json_schema import REVIEW_OPENAI_JSON_SCHEMA_WRAPPER
+from bot.runners.json_schema import SchemaEncoder
 from bot.schemas import ReviewIssue
 from bot.utils.http_retry import post_with_retry
 
@@ -69,7 +69,7 @@ class GroqRunner(BaseRunner):
             ],
             "temperature": 0.2,
             "max_tokens": 2048,
-            "response_format": REVIEW_OPENAI_JSON_SCHEMA_WRAPPER,
+            "response_format": SchemaEncoder.for_openai(),
         }
 
         logger.debug(f"Calling Groq with model: {self.model}")
