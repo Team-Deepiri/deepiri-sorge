@@ -37,13 +37,6 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - name: Generate App installation token
-        id: app-token
-        uses: actions/create-github-app-token@v1
-        with:
-          app-id: ${{ secrets.SORGE_APP_ID }}
-          private-key: ${{ secrets.SORGE_APP_PRIVATE_KEY }}
-
       - name: Resolve dispatch inputs
         id: inputs
         run: |
@@ -63,6 +56,14 @@ jobs:
           else
             echo "FORCE_FLAG=" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Generate App installation token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.SORGE_APP_ID }}
+          private-key: ${{ secrets.SORGE_APP_PRIVATE_KEY }}
+          installation-id: ${{ steps.inputs.outputs.INSTALLATION_ID }}
 
       - name: Post starting message
         env:
