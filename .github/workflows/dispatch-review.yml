@@ -18,7 +18,7 @@ on:
         type: number
       installation_id:
         description: "GitHub App installation ID"
-        required: false
+        required: true
         type: string
 
 permissions:
