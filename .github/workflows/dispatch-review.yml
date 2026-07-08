@@ -37,6 +37,13 @@ jobs:
     timeout-minutes: 30
 
     steps:
+      - name: Generate App installation token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.SORGE_APP_ID }}
+          private-key: ${{ secrets.SORGE_APP_PRIVATE_KEY }}
+
       - name: Resolve dispatch inputs
         id: inputs
         run: |
@@ -59,7 +66,7 @@ jobs:
 
       - name: Post starting message
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           curl -fsSL -X POST \
             -H "Authorization: Bearer $GITHUB_TOKEN" \
@@ -76,6 +83,7 @@ jobs:
           repository: ${{ steps.inputs.outputs.REPO }}
           path: target-repo
           fetch-depth: 1
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
