@@ -64,6 +64,12 @@ jobs:
           app-id: ${{ secrets.SORGE_APP_ID }}
           private-key: ${{ secrets.SORGE_APP_PRIVATE_KEY }}
           installation-id: ${{ steps.inputs.outputs.INSTALLATION_ID }}
+      
+      - name: Debug token scope
+        run: |
+          echo "Installation ID passed in: '${{ steps.inputs.outputs.INSTALLATION_ID }}'"
+          echo "Installation ID token action reports: '${{ steps.app-token.outputs.installation-id }}'"
+          echo "Repo we're posting to: '${{ steps.inputs.outputs.REPO }}'"
 
       - name: Post starting message
         env:
