@@ -304,7 +304,7 @@ index fcbcec3..65e8b69 100644
 +            "contents": [{"parts": [{"text": self._build_prompt(diff)}]}],
              "generationConfig": {
                  "temperature": 0.3,
-                 "maxOutputTokens": 8192,
+                 "maxOutputTokens": 16384,
 @@ -65,24 +57,18 @@ class GeminiRunner(BaseRunner):
  
          logger.debug(f"Calling Gemini with model: {self.model}")

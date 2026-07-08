@@ -70,7 +70,7 @@ class OpenRouterRunner(BaseRunner):
                 {"role": "user", "content": self._build_prompt(diff)},
             ],
             "temperature": 0.2,
-            "max_tokens": 8192,
+            "max_tokens": 16384,
             "response_format": SchemaEncoder.for_openai(),
         }
 
