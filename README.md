@@ -20,7 +20,7 @@ A GitHub-native, on-demand AI review bot that:
 
 1. **Runs in GitHub Actions** — Zero infrastructure to manage
 2. **Routes to optimal LLM** — Groq for small PRs, OpenRouter for medium, Gemini for large
-3. **Filters aggressively** — Skips 70-90% of PRs that don't need AI (when running automatic mode)
+3. **Smart filtering** — Skips docs-only, dependency-only, and trivial PRs when not forced
 4. **Provider failover** — Falls back through the provider chain if quotas are exhausted
 
 ### Architecture

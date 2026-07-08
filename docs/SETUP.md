@@ -22,9 +22,10 @@ No workflow files or API keys needed in your repo. See [docs/GITHUB_APP.md](GITH
 
 ---
 
-## Option 2: Production Setup (GitHub Actions — dogfooding only)
+## Option 2: Manual Dispatch (testing/debugging)
 
-This workflow lives inside the `deepiri-sorge` repo to review its own PRs automatically on open/sync. External repos should use the GitHub App instead.
+Manually trigger a review from the `deepiri-sorge` repo using `workflow_dispatch`.
+All production reviews should go through the GitHub App / `/sorge` pipeline (Option 1).
 
 ### 1. Add API Key Secrets
 

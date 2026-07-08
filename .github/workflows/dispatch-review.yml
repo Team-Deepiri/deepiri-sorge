@@ -37,6 +37,13 @@ jobs:
     timeout-minutes: 30
 
     steps:
+      - name: Generate App installation token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.SORGE_APP_ID }}
+          private-key: ${{ secrets.SORGE_APP_PRIVATE_KEY }}
+
       - name: Resolve dispatch inputs
         id: inputs
         run: |
@@ -57,6 +64,16 @@ jobs:
             echo "FORCE_FLAG=" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Post starting message
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          curl -fsSL -X POST \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${{ steps.inputs.outputs.REPO }}/issues/${{ steps.inputs.outputs.PR_NUMBER }}/comments" \
+            -d '{"body": "Starting AI review..."}' >/dev/null
+
       - name: Checkout sorge
         uses: actions/checkout@v4
 
@@ -66,6 +83,7 @@ jobs:
           repository: ${{ steps.inputs.outputs.REPO }}
           path: target-repo
           fetch-depth: 1
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Set up Python
         uses: actions/setup-python@v5

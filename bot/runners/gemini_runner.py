@@ -52,7 +52,7 @@ class GeminiRunner(BaseRunner):
             "contents": [{"parts": [{"text": self._build_prompt(diff)}]}],
             "generationConfig": {
                 "temperature": 0.2,
-                "maxOutputTokens": 8192,
+                "maxOutputTokens": 16384,
                 "topP": 0.95,
                 "topK": 40,
                 "responseMimeType": "application/json",
