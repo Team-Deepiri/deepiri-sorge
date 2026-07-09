@@ -130,43 +130,54 @@ function handleIssueComment(payload, env) {
 
 export default {
   async fetch(request, env) {
-    const url = new URL(request.url);
+    try {
+      const url = new URL(request.url);
 
-    if (url.pathname === "/health") {
-      return new Response("ok", { status: 200 });
-    }
+      if (url.pathname === "/health") {
+        return new Response("ok", { status: 200 });
+      }
 
-    if (url.pathname !== "/webhook" || request.method !== "POST") {
-      return new Response("Not found", { status: 404 });
-    }
+      if (url.pathname !== "/webhook" || request.method !== "POST") {
+        return new Response("Not found", { status: 404 });
+      }
 
-    const body = await request.text();
-    const signature = request.headers.get("X-Hub-Signature-256") || "";
+      const body = await request.text();
+      const signature = request.headers.get("X-Hub-Signature-256") || "";
 
-    const valid = await verifySignature(body, signature, env.GITHUB_WEBHOOK_SECRET);
-    if (!valid) {
-      return new Response("Invalid signature", { status: 401 });
-    }
+      const valid = await verifySignature(body, signature, env.GITHUB_WEBHOOK_SECRET);
+      if (!valid) {
+        return new Response("Invalid signature", { status: 401 });
+      }
 
-    const event = request.headers.get("X-GitHub-Event") || "";
-    const payload = JSON.parse(body);
+      const event = request.headers.get("X-GitHub-Event") || "";
+      const payload = JSON.parse(body);
 
-    if (event === "ping") {
-      return new Response(JSON.stringify({ ok: true, message: "pong" }), {
+      if (event === "ping") {
+        return new Response(JSON.stringify({ ok: true, message: "pong" }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+
+      let result;
+      if (event === "issue_comment") {
+        result = await handleIssueComment(payload, env);
+      } else {
+        result = { skipped: true, event, reason: "only /sorge slash commands trigger review" };
+      }
+
+      return new Response(JSON.stringify(result), {
+        status: result.error ? 500 : 200,
         headers: { "Content-Type": "application/json" },
       });
+    } catch (err) {
+      console.error("Unhandled error in fetch handler:", err.stack || err.message || err);
+      return new Response(
+        JSON.stringify({ error: String(err.message || err) }),
+        {
+          status: 500,
+          headers: { "Content-Type": "application/json" },
+        },
+      );
     }
-
-    let result;
-    if (event === "issue_comment") {
-      result = await handleIssueComment(payload, env);
-    } else {
-      result = { skipped: true, event, reason: "only /sorge slash commands trigger review" };
-    }
-
-    return new Response(JSON.stringify(result), {
-      status: result.error ? 500 : 200,
-      headers: { "Content-Type": "application/json" },
-    });
   },
 };
