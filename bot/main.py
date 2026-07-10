@@ -127,6 +127,7 @@ def execute_plan(
         # For OpenRouter, iterate through all configured models
         # Each model gets up to 3 attempts with exponential backoff (1.5×)
         # Fallback models (index > 0) use a shorter timeout to fail fast
+        failed_runner = None  # Keep reference for salvaging non-JSON output
         if assignment.action == Action.OPENROUTER:
             models = config.openrouter.models
             for i, model in enumerate(models):
@@ -167,6 +168,7 @@ def execute_plan(
                 logger.warning(
                     f"OpenRouter model {model} exhausted after 3 attempts — trying next model"
                 )
+                failed_runner = runner
 
             logger.warning("All OpenRouter models exhausted — falling through to fallback chain")
         else:
@@ -178,9 +180,39 @@ def execute_plan(
                     repo_context=repo_context,
                     context_fingerprint=context_fingerprint,
                 )
-                if result:
+                # Reject parse_warning results (non-JSON responses, truncated output, etc.)
+                # so the fallback chain gets a chance — but salvage any non-JSON text
+                # as partial context for the next provider
+                if result and not result.parse_warning:
                     quota.record(assignment.action.value)
                     return result
+                failed_runner = runner  # Keep for salvage attempt
+
+        # Salvage context from failed responses (e.g. non-JSON text that still
+        # contains useful review content). Pass it to fallback providers so they
+        # can continue from where the previous model left off rather than starting
+        # from scratch.
+        salvaged_context: str | None = None
+        if failed_runner is not None:
+            raw = getattr(failed_runner, '_last_raw_response', None)
+            if raw and isinstance(raw, str) and len(raw) > 50:
+                # Check if it looks non-JSON (doesn't start with '{')
+                first_char = raw.strip()[:1]
+                if first_char != '{':
+                    excerpt = raw[:4000].strip()
+                    if excerpt:
+                        salvaged_context = (
+                            f"## PREVIOUS MODEL PARTIAL OUTPUT (salvaged)\n"
+                            f"The previous reviewer ({failed_runner.model}) returned "
+                            f"unstructured text instead of valid JSON. "
+                            f"Use it as context; do NOT repeat findings it already covered.\n\n"
+                            f"{excerpt}\n"
+                        )
+                        logger.info(
+                            f"Salvaged {len(excerpt)} chars of non-JSON output from "
+                            f"{assignment.action.value} ({failed_runner.model}) "
+                            f"as partial-review context"
+                        )
 
         # Fallback: try other providers in preference chain
         chain = engine.get_preference_chain(assignment.chunk.estimated_tokens)
@@ -196,12 +228,26 @@ def execute_plan(
                 f"Falling back from {assignment.action.value} to {action.value} "
                 f"for chunk ({assignment.chunk.estimated_tokens} tokens)"
             )
+            # If we have salvaged text from a previous failure, weave it into the
+            # fallback's repository context so it knows what was already covered.
+            effective_context = repo_context
+            if salvaged_context:
+                effective_context = (
+                    (repo_context + "\n\n---\n\n" + salvaged_context)
+                    if repo_context
+                    else salvaged_context
+                )
             result = runner.review(
                 assignment.chunk.parsed_diff,
-                repo_context=repo_context,
+                repo_context=effective_context,
                 context_fingerprint=context_fingerprint,
             )
-            if result:
+            if result and not result.parse_warning:
+                if salvaged_context:
+                    result.routing_meta = result.routing_meta or {}
+                    result.routing_meta["salvaged_from"] = assignment.action.value
+                    result.routing_meta["salvaged_model"] = failed_runner.model if failed_runner else None
+                    result.routing_meta["salvaged_chars"] = len(salvaged_context)
                 quota.record(action.value)
                 return result
 

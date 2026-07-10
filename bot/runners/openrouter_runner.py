@@ -38,7 +38,7 @@ class OpenRouterRunner(BaseRunner):
         self.http_retries = http_retries
         self.http_timeout = http_timeout
         self.use_structured_output = use_structured_output
-        self._last_response = None
+        self._last_raw_response: str | None = None
 
     def _run_review(self, diff: ParsedDiff) -> ReviewResult | None:
         if not self.api_key:
@@ -100,6 +100,7 @@ class OpenRouterRunner(BaseRunner):
         data = response.json()
         choice = data.get("choices", [{}])[0]
         content = choice.get("message", {}).get("content", "")
+        self._last_raw_response = content  # store for salvage on parse failure
         finish_reason = choice.get("finish_reason")
         tokens_used = data.get("usage", {}).get("total_tokens")
 
