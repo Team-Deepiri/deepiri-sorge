@@ -28,10 +28,17 @@ class OpenRouterRunner(BaseRunner):
         model: str | None = None,
         endpoint: str | None = None,
         cache_config: CacheConfig | None = None,
+        http_retries: int = 3,
+        http_timeout: int = 120,
+        use_structured_output: bool = True,
     ):
         super().__init__(api_key or os.getenv("OPENROUTER_API_KEY"), cache_config)
         self.model = model or self.DEFAULT_MODEL
         self.endpoint = endpoint or self.DEFAULT_ENDPOINT
+        self.http_retries = http_retries
+        self.http_timeout = http_timeout
+        self.use_structured_output = use_structured_output
+        self._last_response = None
 
     def _run_review(self, diff: ParsedDiff) -> ReviewResult | None:
         if not self.api_key:
@@ -57,22 +64,33 @@ class OpenRouterRunner(BaseRunner):
             "X-Title": "deepiri-sorge",
         }
 
+        if self.use_structured_output:
+            system_msg = (
+                "You are a code review bot. Respond with a single raw JSON object only. "
+                "No markdown fences, no prose before or after the JSON."
+            )
+            response_format = SchemaEncoder.for_openai()
+        else:
+            # Inject schema as a prompt hint for models without native structured output
+            schema_hint = f"\n\nYou MUST respond with valid JSON matching this schema:\n{SchemaEncoder.for_prompt_injection()}"
+            system_msg = (
+                "You are a code review bot. Respond with a single raw JSON object only. "
+                "No markdown fences, no prose before or after the JSON."
+                + schema_hint
+            )
+            response_format = None
+
         payload = {
             "model": self.model,
             "messages": [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a code review bot. Respond with a single raw JSON object only. "
-                        "No markdown fences, no prose before or after the JSON."
-                    ),
-                },
+                {"role": "system", "content": system_msg},
                 {"role": "user", "content": self._build_prompt(diff)},
             ],
             "temperature": 0.2,
             "max_tokens": 16384,
-            "response_format": SchemaEncoder.for_openai(),
         }
+        if response_format:
+            payload["response_format"] = response_format
 
         logger.debug(f"Calling OpenRouter with model: {self.model}")
 
@@ -99,14 +117,18 @@ class OpenRouterRunner(BaseRunner):
 
     def _post_openrouter(self, payload: dict, headers: dict) -> requests.Response:
         try:
-            return post_with_retry(self.endpoint, json=payload, headers=headers, timeout=120)
+            return post_with_retry(
+                self.endpoint, json=payload, headers=headers, timeout=self.http_timeout,
+                max_retries=self.http_retries,
+            )
         except requests.HTTPError as exc:
             if payload.get("response_format") and self._is_json_mode_rejected(exc):
                 logger.warning("OpenRouter rejected json_object mode; retrying without it")
                 retry_payload = dict(payload)
                 retry_payload.pop("response_format", None)
                 return post_with_retry(
-                    self.endpoint, json=retry_payload, headers=headers, timeout=120
+                    self.endpoint, json=retry_payload, headers=headers, timeout=self.http_timeout,
+                    max_retries=self.http_retries,
                 )
             raise
 

@@ -31,15 +31,16 @@ class TestConfig:
         config = Config()
 
         assert config.routing.small_pr_threshold == 5000
-        assert config.routing.medium_pr_threshold == 200000
-        assert config.routing.large_pr_threshold == 200000
-        assert config.routing.chunk_budget == 180000
+        assert config.routing.medium_pr_threshold == 120000
+        assert config.routing.large_pr_threshold == 120000
+        assert config.routing.chunk_budget == 100000
 
     def test_openrouter_defaults(self):
         openrouter = OpenRouterConfig()
 
         assert openrouter.enabled is True
         assert openrouter.model == "google/gemma-4-31b-it:free"
+        assert openrouter.models == ["google/gemma-4-31b-it:free", "openai/gpt-oss-20b:free"]
         assert openrouter.endpoint == "https://openrouter.ai/api/v1/chat/completions"
         assert openrouter.api_key is None
 
@@ -90,3 +91,11 @@ class TestConfigOverrides:
         config = Config(openrouter=OpenRouterConfig(model="meta-llama/llama-3-70b-instruct"))
 
         assert config.openrouter.model == "meta-llama/llama-3-70b-instruct"
+        # Legacy model field should sync to models
+        assert config.openrouter.models == ["meta-llama/llama-3-70b-instruct"]
+
+    def test_custom_openrouter_models(self):
+        config = Config(openrouter=OpenRouterConfig(models=["a/b", "c/d"]))
+
+        assert config.openrouter.models == ["a/b", "c/d"]
+        assert config.openrouter.model == "a/b"

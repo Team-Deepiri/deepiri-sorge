@@ -21,7 +21,10 @@ model = "gemini-2.5-flash"
 
 [openrouter]
 enabled = true
-model = "google/gemma-4-31b-it:free"
+models = [
+    "google/gemma-4-31b-it:free",
+    "openai/gpt-oss-20b:free",
+]
 endpoint = "https://openrouter.ai/api/v1/chat/completions"
 
 [groq]
@@ -31,9 +34,9 @@ endpoint = "https://api.groq.com/openai/v1/chat/completions"
 
 [routing]
 small_pr_threshold = 5000
-medium_pr_threshold = 200000
-large_pr_threshold = 200000
-chunk_budget = 180000
+medium_pr_threshold = 120000
+large_pr_threshold = 120000
+chunk_budget = 100000
 
 [quota]
 gemini_rpd = 20
