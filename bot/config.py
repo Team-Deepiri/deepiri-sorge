@@ -36,7 +36,12 @@ class OpenRouterConfig(BaseModel):
     enabled: bool = Field(default=True, description="Enable OpenRouter")
     model: str = Field(default="google/gemma-4-31b-it:free", description="Legacy: first model in the list")
     models: list[str] = Field(
-        default=["google/gemma-4-31b-it:free", "openai/gpt-oss-20b:free"],
+        default=[
+            "google/gemma-4-31b-it:free",
+            "openai/gpt-oss-20b:free",
+            "meta-llama/llama-3.3-70b-instruct:free",
+            "poolside/laguna-m.1:free",
+        ],
         description="Ordered list of OpenRouter models to try in sequence (3 retries each)",
     )
     endpoint: str = Field(
