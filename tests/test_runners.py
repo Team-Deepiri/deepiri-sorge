@@ -199,7 +199,7 @@ class TestGeminiRunner:
         assert result.review_type == "gemini"
         assert result.summary == "Config refactor"
         assert result.issues == []
-        assert result.score == 9.0
+        assert result.score == 10.0
         assert result.tokens_used == 800
 
     def test_recommendations_passed_through(self, sample_diff):
@@ -264,7 +264,7 @@ class TestOpenRouterRunner:
         assert result.review_type == "openrouter"
         assert result.summary == "Added input validation"
         assert result.issues == []
-        assert result.score == 8.5
+        assert result.score == 10.0
         assert result.tokens_used == 256
 
     def test_uses_openrouter_api_key_env_var(self, monkeypatch):
@@ -309,7 +309,7 @@ class TestGroqRunner:
         assert result.review_type == "groq"
         assert result.summary == "Added input validation"
         assert result.issues == []
-        assert result.score == 8.5
+        assert result.score == 10.0
         assert result.tokens_used == 256
 
     def test_uses_groq_api_key_env_var(self, monkeypatch):
@@ -361,7 +361,6 @@ class TestSchemaEncoder:
     def test_for_gemini_has_correct_structure(self):
         result = SchemaEncoder.for_gemini()
         assert "summary" in result["properties"]
-        assert "metrics" in result["properties"]
         assert "issues" in result["properties"]
         assert "best_practice_notes" in result["properties"]
 

@@ -57,6 +57,21 @@ class ReviewResult:
         return d
 
 
+def compute_score_from_issues(issues: list[ReviewIssue]) -> float:
+    """Deterministic score derived purely from issue severity counts.
+
+    Each severity reduces from a perfect 10:
+      critical  -2.5
+      high      -1.5
+      medium    -0.75
+      low       -0.25
+    Clamped to [0, 10] and rounded to one decimal.
+    """
+    penalties = {"critical": 2.5, "high": 1.5, "medium": 0.75, "low": 0.25}
+    deduction = sum(penalties.get(i.severity, 0) for i in issues)
+    return max(0.0, min(10.0, round(10.0 - deduction, 1)))
+
+
 def issues_from_parsed(parsed: dict) -> list[ReviewIssue]:
     return [
         ReviewIssue(
@@ -83,15 +98,12 @@ def result_from_parsed(
     parse_warning = data.pop("_parse_warning", None) or data.get("parse_warning")
     data = normalize_review_payload(data)
 
-    score = data.get("score", 7.0)
-    try:
-        score = float(score)
-    except (TypeError, ValueError):
-        score = 7.0
+    issues = issues_from_parsed(data)
+    score = compute_score_from_issues(issues)
 
     return ReviewResult(
         summary=data.get("summary", "Review complete"),
-        issues=issues_from_parsed(data),
+        issues=issues,
         recommendations=data.get("recommendations", []),
         score=score,
         latency_ms=latency_ms,

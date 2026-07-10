@@ -129,11 +129,13 @@ def test_markdown_with_dict_like_data_extracts_issues():
     assert parsed["score"] == 7.0
 
 
-def test_result_from_parsed_reads_metrics_score():
+def test_result_from_parsed_derives_score_from_issues():
+    """Score is computed deterministically from issue severity counts,
+    overriding whatever the LLM returned."""
     result = result_from_parsed(
         {
             "summary": "ok",
-            "metrics": {"score": 9.0},
+            "metrics": {"score": 9.0},  # LLM value — overridden by compute
             "issues": [],
             "best_practice_notes": ["ship it"],
         },
@@ -143,8 +145,31 @@ def test_result_from_parsed_reads_metrics_score():
         review_type="openrouter",
     )
 
-    assert result.score == 9.0
+    # 0 issues → perfect 10.0
+    assert result.score == 10.0
     assert result.recommendations == ["ship it"]
+
+    # With issues, score adjusts downward
+    result2 = result_from_parsed(
+        {
+            "summary": "needs work",
+            "issues": [
+                {
+                    "severity": "critical",
+                    "file": "src/main.py",
+                    "line": 1,
+                    "message": "Security hole",
+                },
+            ],
+            "best_practice_notes": [],
+        },
+        latency_ms=1.0,
+        model="test",
+        tokens_used=10,
+        review_type="openrouter",
+    )
+    # 1 critical → 10 - 2.5 = 7.5
+    assert result2.score == 7.5
 
 
 def test_normalize_maps_category_and_mentoring():

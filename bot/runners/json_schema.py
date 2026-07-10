@@ -14,17 +14,6 @@ REVIEW_JSON_SCHEMA = {
     "type": "object",
     "properties": {
         "summary": {"type": "string", "description": "Overall review summary under 400 words"},
-        "metrics": {
-            "type": "object",
-            "properties": {
-                "score": {"type": "number", "description": "Quality score 0-10"},
-                "requires_human_review": {
-                    "type": "boolean",
-                    "description": "Whether this PR needs human attention",
-                },
-            },
-            "required": ["score", "requires_human_review"],
-        },
         "issues": {
             "type": "array",
             "description": "Code issues found. Max 8 items. No filler.",
@@ -69,7 +58,7 @@ REVIEW_JSON_SCHEMA = {
             "items": {"type": "string", "description": "General best practice recommendations"},
         },
     },
-    "required": ["summary", "metrics", "issues", "best_practice_notes"],
+    "required": ["summary", "issues", "best_practice_notes"],
 }
 
 
