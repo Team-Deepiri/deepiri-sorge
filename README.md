@@ -2,7 +2,6 @@
 
 **On-demand AI PR review bot for GitHub — powered by Gemini, OpenRouter, and Groq**
 ---
-_Designed by  Justin Yoo & Joe Black_
 ```
 PR /sorge command → Cloudflare Worker → repository_dispatch → Decision Engine → [Skip | Groq | OpenRouter | Gemini] → PR Comment
 ```
@@ -195,6 +194,9 @@ git push origin v0.2.0
 ```
 
 Consumer workflows should pin the same tag for `uses:` and `bot_ref:`.
+
+## Credits
+_Designed by  Justin Yoo & Joe Black_
 
 ## License
 
