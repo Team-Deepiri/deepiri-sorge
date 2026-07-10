@@ -1,5 +1,6 @@
 # deepiri-sorge
 
+designed by @slopefields and @jrb0003
 **On-demand AI PR review bot for GitHub — powered by Gemini, OpenRouter, and Groq**
 
 ```
