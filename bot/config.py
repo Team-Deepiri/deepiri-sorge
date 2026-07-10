@@ -34,12 +34,31 @@ class GeminiConfig(BaseModel):
 
 class OpenRouterConfig(BaseModel):
     enabled: bool = Field(default=True, description="Enable OpenRouter")
-    model: str = Field(default="google/gemma-4-31b-it:free", description="Model to use")
+    model: str = Field(default="google/gemma-4-31b-it:free", description="Legacy: first model in the list")
+    models: list[str] = Field(
+        default=["google/gemma-4-31b-it:free", "openai/gpt-oss-20b:free"],
+        description="Ordered list of OpenRouter models to try in sequence (3 retries each)",
+    )
     endpoint: str = Field(
         default="https://openrouter.ai/api/v1/chat/completions",
         description="OpenRouter chat completions endpoint",
     )
     api_key: str | None = Field(default=None, description="API key (uses OPENROUTER_API_KEY env if not set)")
+
+    def model_post_init(self, __context):
+        """After init, sync model from models[0] and vice versa."""
+        fields_set = self.model_fields_set
+        if "model" in fields_set and "models" not in fields_set:
+            # Old-style config with only 'model' set; sync models from it
+            self.models = [self.model]
+        elif "models" in fields_set and "model" not in fields_set:
+            # New-style config with only 'models' set; sync legacy field from it
+            self.model = self.models[0]
+        elif "models" in fields_set and "model" in fields_set:
+            # Both set explicitly; ensure model matches models[0]
+            self.model = self.models[0]
+        # else: neither explicitly set (all defaults) — leave defaults untouched
+        super().model_post_init(__context)
 
 
 class GroqConfig(BaseModel):
@@ -54,9 +73,9 @@ class GroqConfig(BaseModel):
 
 class RoutingConfig(BaseModel):
     small_pr_threshold: int = Field(default=5000, description="Max tokens for small PR (Groq)")
-    medium_pr_threshold: int = Field(default=200000, description="Max tokens for medium PR (OpenRouter)")
-    large_pr_threshold: int = Field(default=200000, description="Min tokens for large PR (Gemini)")
-    chunk_budget: int = Field(default=180000, description="Target tokens per chunk when splitting")
+    medium_pr_threshold: int = Field(default=120000, description="Max tokens for medium PR (OpenRouter)")
+    large_pr_threshold: int = Field(default=120000, description="Min tokens for large PR (Gemini)")
+    chunk_budget: int = Field(default=100000, description="Target tokens per chunk when splitting")
 
 
 class QuotaConfig(BaseModel):

@@ -124,23 +124,69 @@ def execute_plan(
         return results, unreviewable
 
     def run_one(assignment):
-        # Try the assigned provider first
-        runner = _make_runner(assignment.action, config, cache_config)
-        if runner:
-            result = runner.review(
-                assignment.chunk.parsed_diff,
-                repo_context=repo_context,
-                context_fingerprint=context_fingerprint,
-            )
-            if result:
-                quota.record(assignment.action.value)
-                return result
+        # For OpenRouter, iterate through all configured models
+        # Each model gets up to 3 attempts with exponential backoff (1.5×)
+        # Fallback models (index > 0) use a shorter timeout to fail fast
+        if assignment.action == Action.OPENROUTER:
+            models = config.openrouter.models
+            for i, model in enumerate(models):
+                for attempt in range(1, 4):
+                    runner = OpenRouterRunner(
+                        api_key=config.openrouter.api_key,
+                        model=model,
+                        cache_config=cache_config,
+                        http_retries=1,
+                        http_timeout=120 if i == 0 else 30,
+                        use_structured_output=i == 0,
+                    )
+                    logger.info(
+                        f"OpenRouter attempt {attempt}/3 with model {i+1}/{len(models)}: {model}"
+                    )
+                    result = runner.review(
+                        assignment.chunk.parsed_diff,
+                        repo_context=repo_context,
+                        context_fingerprint=context_fingerprint,
+                    )
+                    if result and not result.parse_warning:
+                        quota.record(assignment.action.value)
+                        # Record which model succeeded for observability
+                        result.routing_meta = result.routing_meta or {}
+                        result.routing_meta["openrouter_model"] = model
+                        if i > 0:
+                            result.routing_meta["openrouter_rotation"] = True
+                        return result
+                    if attempt < 3:
+                        import time
+                        wait = 1.5 * attempt
+                        logger.warning(
+                            f"OpenRouter model {model} attempt {attempt}/3 failed"
+                            + (f" ({result.parse_warning})" if result and result.parse_warning else "")
+                            + f"; retrying in {wait:.1f}s..."
+                        )
+                        time.sleep(wait)
+                logger.warning(
+                    f"OpenRouter model {model} exhausted after 3 attempts — trying next model"
+                )
+
+            logger.warning("All OpenRouter models exhausted — falling through to fallback chain")
+        else:
+            # Non-OpenRouter: try the assigned provider first
+            runner = _make_runner(assignment.action, config, cache_config)
+            if runner:
+                result = runner.review(
+                    assignment.chunk.parsed_diff,
+                    repo_context=repo_context,
+                    context_fingerprint=context_fingerprint,
+                )
+                if result:
+                    quota.record(assignment.action.value)
+                    return result
 
         # Fallback: try other providers in preference chain
         chain = engine.get_preference_chain(assignment.chunk.estimated_tokens)
         for action, enabled in chain:
             if action == assignment.action:
-                continue  # already tried above
+                continue  # already tried above (including all OpenRouter models)
             if not enabled or not quota.can_use(action.value):
                 continue
             runner = _make_runner(action, config, cache_config)
