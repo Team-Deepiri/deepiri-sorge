@@ -1,8 +1,8 @@
 # deepiri-sorge
 
-designed by @slopefields and @jrb0003
 **On-demand AI PR review bot for GitHub — powered by Gemini, OpenRouter, and Groq**
 
+_Designed by  Justin Yoo & Joe Black_
 ```
 PR /sorge command → Cloudflare Worker → repository_dispatch → Decision Engine → [Skip | Groq | OpenRouter | Gemini] → PR Comment
 ```
