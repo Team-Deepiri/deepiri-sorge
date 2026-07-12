@@ -32,6 +32,7 @@ class GroqRunner(BaseRunner):
         super().__init__(api_key or os.getenv("GROQ_API_KEY"), cache_config)
         self.model = model or self.DEFAULT_MODEL
         self.endpoint = endpoint or self.DEFAULT_ENDPOINT
+        self._last_raw_response: str | None = None
 
     def _run_review(self, diff: ParsedDiff) -> ReviewResult | None:
         if not self.api_key:
@@ -89,6 +90,7 @@ class GroqRunner(BaseRunner):
         data = response.json()
         choice = data.get("choices", [{}])[0]
         content = choice.get("message", {}).get("content", "")
+        self._last_raw_response = content  # store for salvage on parse failure
         if choice.get("finish_reason") == "length":
             logger.warning("Groq response truncated (finish_reason=length)")
         tokens_used = data.get("usage", {}).get("total_tokens")

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
+from loguru import logger
+
 from bot.diff_parser import ParsedDiff
 from bot.prompts import load_review_template
 from bot.schemas import ReviewIssue, ReviewResult, issues_from_parsed, result_from_parsed
@@ -37,12 +39,17 @@ class BaseRunner(ABC):
                 context_fingerprint=context_fingerprint,
             )
             if cached is not None:
-                return self._result_from_dict(cached)
+                # Don't serve cached results that had parse warnings — a retry
+                # should get a fresh API call, not the same broken response.
+                if cached.get("parse_warning"):
+                    logger.warning(f"Cache hit for {self.model} ignored (has parse_warning)")
+                else:
+                    return self._result_from_dict(cached)
 
         self._repo_context = repo_context
         result = self._run_review(diff)
 
-        if result is not None and self._cache_config and self._cache_config.enabled:
+        if result is not None and not result.parse_warning and self._cache_config and self._cache_config.enabled:
             from bot.utils import cache as _cache
             _cache.set(
                 diff.raw,

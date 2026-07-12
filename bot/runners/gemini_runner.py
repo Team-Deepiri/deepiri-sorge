@@ -28,6 +28,7 @@ class GeminiRunner(BaseRunner):
     ):
         super().__init__(api_key or os.getenv("GOOGLE_API_KEY"), cache_config)
         self.model = model or self.DEFAULT_MODEL
+        self._last_raw_response: str | None = None
 
     def _run_review(self, diff: ParsedDiff) -> ReviewResult | None:
         if not self.api_key:
@@ -72,6 +73,7 @@ class GeminiRunner(BaseRunner):
             .get("parts", [{}])[0]
             .get("text", "")
         )
+        self._last_raw_response = content  # store for salvage on parse failure
         tokens_used = data.get("usageMetadata", {}).get("totalTokenCount")
 
         parsed = self._parse_response(content)
