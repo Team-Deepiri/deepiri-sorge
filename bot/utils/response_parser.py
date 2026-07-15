@@ -280,9 +280,12 @@ def _extract_structured_from_markdown(
 
 
 def normalize_review_payload(raw: dict[str, Any]) -> dict[str, Any]:
-    """Map template fields (metrics.score, best_practice_notes) to runner schema."""
+    """Normalize a parsed review dict to the runner schema."""
     data = dict(raw)
 
+    # Extract score from top-level or nested metrics (backward compat).
+    # Note: this score is overridden by compute_score_from_issues() in
+    # result_from_parsed(), so it only appears in raw parse_review_response() output.
     score = data.get("score")
     metrics = data.get("metrics")
     if score is None and isinstance(metrics, dict):

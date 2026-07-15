@@ -9,7 +9,7 @@ from loguru import logger
 from bot.config import CacheConfig
 from bot.diff_parser import ParsedDiff
 from bot.runners.base import BaseRunner, ReviewResult
-from bot.runners.json_schema import REVIEW_JSON_SCHEMA
+from bot.runners.json_schema import SchemaEncoder
 from bot.schemas import ReviewIssue
 from bot.utils.http_retry import post_with_retry
 
@@ -28,6 +28,7 @@ class GeminiRunner(BaseRunner):
     ):
         super().__init__(api_key or os.getenv("GOOGLE_API_KEY"), cache_config)
         self.model = model or self.DEFAULT_MODEL
+        self._last_raw_response: str | None = None
 
     def _run_review(self, diff: ParsedDiff) -> ReviewResult | None:
         if not self.api_key:
@@ -52,11 +53,11 @@ class GeminiRunner(BaseRunner):
             "contents": [{"parts": [{"text": self._build_prompt(diff)}]}],
             "generationConfig": {
                 "temperature": 0.2,
-                "maxOutputTokens": 8192,
+                "maxOutputTokens": 16384,
                 "topP": 0.95,
                 "topK": 40,
                 "responseMimeType": "application/json",
-                "responseSchema": REVIEW_JSON_SCHEMA,
+                "responseSchema": SchemaEncoder.for_gemini(),
             },
         }
 
@@ -72,6 +73,7 @@ class GeminiRunner(BaseRunner):
             .get("parts", [{}])[0]
             .get("text", "")
         )
+        self._last_raw_response = content  # store for salvage on parse failure
         tokens_used = data.get("usageMetadata", {}).get("totalTokenCount")
 
         parsed = self._parse_response(content)

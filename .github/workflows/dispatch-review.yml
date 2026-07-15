@@ -18,7 +18,7 @@ on:
         type: number
       installation_id:
         description: "GitHub App installation ID"
-        required: false
+        required: true
         type: string
 
 permissions:
@@ -41,21 +41,54 @@ jobs:
         id: inputs
         run: |
           if [ -n "${{ github.event.client_payload.repo }}" ]; then
-            echo "REPO=${{ github.event.client_payload.repo }}" >> "$GITHUB_OUTPUT"
+            FULL_REPO="${{ github.event.client_payload.repo }}"
             echo "PR_NUMBER=${{ github.event.client_payload.pr_number }}" >> "$GITHUB_OUTPUT"
             echo "INSTALLATION_ID=${{ github.event.client_payload.installation_id }}" >> "$GITHUB_OUTPUT"
             FORCE="${{ github.event.client_payload.force }}"
           else
-            echo "REPO=${{ inputs.repo }}" >> "$GITHUB_OUTPUT"
+            FULL_REPO="${{ inputs.repo }}"
             echo "PR_NUMBER=${{ inputs.pr_number }}" >> "$GITHUB_OUTPUT"
             echo "INSTALLATION_ID=${{ inputs.installation_id }}" >> "$GITHUB_OUTPUT"
             FORCE=""
           fi
+
+          echo "REPO=${FULL_REPO}" >> "$GITHUB_OUTPUT"
+          echo "REPO_OWNER=${FULL_REPO%%/*}" >> "$GITHUB_OUTPUT"
+          echo "REPO_NAME=${FULL_REPO##*/}" >> "$GITHUB_OUTPUT"
+
           if [ "$FORCE" = "true" ]; then
             echo "FORCE_FLAG=--force" >> "$GITHUB_OUTPUT"
           else
             echo "FORCE_FLAG=" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Generate App installation token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.SORGE_APP_ID }}
+          private-key: ${{ secrets.SORGE_APP_PRIVATE_KEY }}
+          owner: ${{ steps.inputs.outputs.REPO_OWNER }}
+          repositories: ${{ steps.inputs.outputs.REPO_NAME }}
+
+      - name: Debug token scope
+        run: |
+          echo "Installation ID passed in: '${{ steps.inputs.outputs.INSTALLATION_ID }}'"
+          echo "Installation ID token action reports: '${{ steps.app-token.outputs.installation-id }}'"
+          echo "Repo we're posting to: '${{ steps.inputs.outputs.REPO }}'"
+          echo "Owner used for token scope: '${{ steps.inputs.outputs.REPO_OWNER }}'"
+          echo "Repo name used for token scope: '${{ steps.inputs.outputs.REPO_NAME }}'"
+
+      - name: Post starting message
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          curl -sS -X POST \
+            -w "\nHTTP_STATUS:%{http_code}\n" \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${{ steps.inputs.outputs.REPO }}/issues/${{ steps.inputs.outputs.PR_NUMBER }}/comments" \
+            -d '{"body": "Starting AI review..."}'
 
       - name: Checkout sorge
         uses: actions/checkout@v4
@@ -66,6 +99,7 @@ jobs:
           repository: ${{ steps.inputs.outputs.REPO }}
           path: target-repo
           fetch-depth: 1
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Set up Python
         uses: actions/setup-python@v5

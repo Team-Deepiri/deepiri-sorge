@@ -12,10 +12,16 @@ from loguru import logger
 
 def _load_private_key(pem: str | None) -> str:
     if pem:
-        return pem.replace("\\n", "\n")
+        # Handle both actual \n chars and literal "\\n" strings
+        pem = pem.replace("\\n", "\n")
+        # Strip trailing whitespace from each line
+        lines = [line.strip() for line in pem.split("\n")]
+        # Remove any empty lines at start/end but keep structure
+        key = "\n".join(lines)
+        return key
     path = os.getenv("SORGE_APP_PRIVATE_KEY_PATH")
     if path and os.path.isfile(path):
-        return open(path, encoding="utf-8").read()
+        return open(path, encoding="utf-8").read().strip()
     return ""
 
 
@@ -32,7 +38,17 @@ def create_app_jwt(app_id: str, private_key_pem: str) -> str:
         "exp": now + 600,
         "iss": app_id,
     }
-    return jwt.encode(payload, private_key_pem, algorithm="RS256")
+
+    key = private_key_pem.strip()
+    # Debug: log PEM shape (safe - first/last lines are known markers)
+    first_line = key.split("\n")[0] if key else "EMPTY"
+    last_line = key.split("\n")[-1] if key else "EMPTY"
+    logger.debug(
+        f"PEM first: {first_line} | last: {last_line} | "
+        f"chars: {len(key)} | lines: {len(key.split(chr(10)))}"
+    )
+
+    return jwt.encode(payload, key, algorithm="RS256")
 
 
 def get_installation_token(
@@ -41,7 +57,12 @@ def get_installation_token(
     app_id: str | None = None,
     private_key: str | None = None,
 ) -> str | None:
-    """Exchange App JWT for an installation access token."""
+    """Exchange App JWT for an installation access token.
+
+    Uses raw requests (not ghapi) because ghapi sends ``Authorization: token``
+    (PAT-style) which GitHub rejects for JWTs.  GitHub App JWTs require
+    ``Authorization: Bearer``.
+    """
     app_id = app_id or os.getenv("SORGE_APP_ID", "")
     pem = _load_private_key(private_key or os.getenv("SORGE_APP_PRIVATE_KEY"))
 
@@ -55,12 +76,23 @@ def get_installation_token(
         logger.error(f"Failed to create App JWT: {e}")
         return None
 
+    url = f"https://api.github.com/app/installations/{installation_id}/access_tokens"
+    headers = {
+        "Authorization": f"Bearer {app_jwt}",
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "deepiri-sorge",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
     try:
-        api = GhApi(token=app_jwt)
-        resp = api.apps.create_installation_access_token(installation_id)
-        return resp.token
+        resp = requests.post(url, headers=headers, timeout=120)
+        resp.raise_for_status()
+        data = resp.json()
+        return data["token"]
     except Exception as e:
         logger.error(f"Failed to get installation token: {e}")
+        if isinstance(e, requests.RequestException) and e.response is not None:
+            logger.debug(f"Response: {e.response.text[:500]}")
         return None
 
 

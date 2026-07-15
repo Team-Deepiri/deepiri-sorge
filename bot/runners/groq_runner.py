@@ -11,7 +11,7 @@ from loguru import logger
 from bot.config import CacheConfig
 from bot.diff_parser import ParsedDiff
 from bot.runners.base import BaseRunner, ReviewResult
-from bot.runners.json_schema import REVIEW_OPENAI_JSON_SCHEMA_WRAPPER
+from bot.runners.json_schema import SchemaEncoder
 from bot.schemas import ReviewIssue
 from bot.utils.http_retry import post_with_retry
 
@@ -32,6 +32,7 @@ class GroqRunner(BaseRunner):
         super().__init__(api_key or os.getenv("GROQ_API_KEY"), cache_config)
         self.model = model or self.DEFAULT_MODEL
         self.endpoint = endpoint or self.DEFAULT_ENDPOINT
+        self._last_raw_response: str | None = None
 
     def _run_review(self, diff: ParsedDiff) -> ReviewResult | None:
         if not self.api_key:
@@ -69,7 +70,7 @@ class GroqRunner(BaseRunner):
             ],
             "temperature": 0.2,
             "max_tokens": 2048,
-            "response_format": REVIEW_OPENAI_JSON_SCHEMA_WRAPPER,
+            "response_format": SchemaEncoder.for_openai(),
         }
 
         logger.debug(f"Calling Groq with model: {self.model}")
@@ -89,6 +90,7 @@ class GroqRunner(BaseRunner):
         data = response.json()
         choice = data.get("choices", [{}])[0]
         content = choice.get("message", {}).get("content", "")
+        self._last_raw_response = content  # store for salvage on parse failure
         if choice.get("finish_reason") == "length":
             logger.warning("Groq response truncated (finish_reason=length)")
         tokens_used = data.get("usage", {}).get("total_tokens")
