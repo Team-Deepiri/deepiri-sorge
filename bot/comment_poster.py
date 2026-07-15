@@ -167,6 +167,13 @@ class CommentPoster:
             ])
             if quota_lines:
                 lines.append(f"- Quota this run: {', '.join(quota_lines)}")
+            claim_meta = routing_meta.get("claim_verifier") or {}
+            suppressed = claim_meta.get("suppressed", 0)
+            if suppressed:
+                lines.append(
+                    f"- Claim verifier: suppressed {suppressed} structural "
+                    "false-positive(s) against PR-head symbol map"
+                )
             lines.extend(["", "</details>", ""])
 
         lines.extend([

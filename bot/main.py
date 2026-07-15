@@ -9,6 +9,7 @@ from pathlib import Path
 
 from loguru import logger
 
+from bot.claim_verifier import ClaimVerifier
 from bot.comment_poster import CommentPoster
 from bot.config import Config
 from bot.context_router import ContextRouter, RoutingPlan
@@ -22,6 +23,7 @@ from bot.review_aggregator import ReviewAggregator
 from bot.runners import GeminiRunner, GroqRunner, OpenRouterRunner
 from bot.runners.base import ReviewResult
 from bot.schemas import ReviewResult as ReviewResultSchema
+from bot.symbol_index import SymbolIndexer, format_symbol_index
 
 
 def parse_args() -> argparse.Namespace:
@@ -389,12 +391,31 @@ def main() -> None:
     if decision.action == Action.SKIP and args.force:
         logger.info(f"Force review — overriding skip: {decision.reason}")
 
+    repo_root = Path(args.repo_root)
     context_pack = RepoContextWeaver(config.repo_context).weave(
-        Path(args.repo_root),
+        repo_root,
         parsed_diff,
     )
     repo_context_text = context_pack.text
     context_fingerprint = context_pack.fingerprint
+
+    symbol_indexes = []
+    if config.claim_verifier.enabled or config.claim_verifier.include_symbol_index:
+        symbol_indexes = SymbolIndexer().index_files(repo_root, parsed_diff.files)
+        if config.claim_verifier.include_symbol_index and symbol_indexes:
+            index_block = format_symbol_index(
+                symbol_indexes,
+                max_chars=config.claim_verifier.max_index_chars,
+            )
+            if index_block:
+                repo_context_text = (
+                    f"{repo_context_text}\n\n{index_block}"
+                    if repo_context_text
+                    else index_block
+                )
+                # Include symbol index in cache key so prompt changes invalidate cache.
+                context_fingerprint = f"{context_fingerprint}:{len(index_block)}"
+
     extra_chars = len(repo_context_text or "")
 
     review_result: ReviewResultSchema | None = None
@@ -482,6 +503,14 @@ def main() -> None:
                 )
             sys.exit(2)
         logger.info(f"Review complete: {len(review_result.issues)} issues found")
+
+    if review_result and config.claim_verifier.enabled:
+        review_result = ClaimVerifier().verify_result(
+            review_result,
+            repo_root=repo_root,
+            changed_paths=parsed_diff.files,
+            indexes=symbol_indexes or None,
+        )
 
     if args.pr_number and args.repo and not args.dry_run:
         CommentPoster(github_token).post_review(
