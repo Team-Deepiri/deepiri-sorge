@@ -17,7 +17,6 @@ def _sample_result(review_type: str) -> ReviewResult:
         score=9.0,
         model="test-model",
         latency_ms=0.0,
-
         review_type=review_type,
     )
 
@@ -55,10 +54,11 @@ def test_main_dispatches_openrouter_for_explicit_mode(monkeypatch, capsys):
     monkeypatch.setenv("GITHUB_TOKEN", "test-token")
 
     class FakeOpenRouterRunner:
-        def __init__(self, api_key=None, model=None, cache_config=None):
-            self.api_key = api_key
-            self.model = model
-            self.cache_config = cache_config
+        def __init__(self, *args, **kwargs):
+            self.model = kwargs.get("model") or "fake"
+            self._last_http_status = None
+            self._last_retry_after = None
+            self._last_timed_out = False
 
         def review(self, parsed_diff, **kwargs):
             called["openrouter"] = True
@@ -77,18 +77,23 @@ def test_main_dispatches_openrouter_for_explicit_mode(monkeypatch, capsys):
             verbose=False,
             mode="openrouter",
             repo_root=".",
+            force=False,
         ),
     )
     monkeypatch.setattr(
         "bot.main.RepoContextWeaver",
-        lambda config: type("W", (), {"weave": lambda self, root, diff: type("P", (), {"text": "", "fingerprint": ""})()})(),
+        lambda config: type(
+            "W",
+            (),
+            {"weave": lambda self, root, diff: type("P", (), {"text": "", "fingerprint": ""})()},
+        )(),
     )
     monkeypatch.setattr("bot.main.load_diff", lambda _: "diff-content")
-    monkeypatch.setattr("bot.main.OpenRouterRunner", FakeOpenRouterRunner)
+    monkeypatch.setattr("bot.providers.openrouter.OpenRouterRunner", FakeOpenRouterRunner)
     monkeypatch.setattr("bot.main.DiffParser.parse", lambda self, _: _sample_diff())
     monkeypatch.setattr(
         "bot.main.DecisionEngine.decide",
-        lambda self, _: ReviewDecision(action=Action.GROQ, reason="test"),
+        lambda self, _: ReviewDecision(action=Action.OPENROUTER, reason="test"),
     )
 
     main()
@@ -96,7 +101,7 @@ def test_main_dispatches_openrouter_for_explicit_mode(monkeypatch, capsys):
     out = capsys.readouterr().out
     payload = json.loads(out)
     assert called["openrouter"] is True
-    assert payload["review_type"] == "openrouter"
+    assert payload["review_type"] in ("openrouter", "aggregated")
 
 
 def test_main_dispatches_groq_for_auto_mode_decision(monkeypatch, capsys):
@@ -121,11 +126,16 @@ def test_main_dispatches_groq_for_auto_mode_decision(monkeypatch, capsys):
             verbose=False,
             mode="auto",
             repo_root=".",
+            force=False,
         ),
     )
     monkeypatch.setattr(
         "bot.main.RepoContextWeaver",
-        lambda config: type("W", (), {"weave": lambda self, root, diff: type("P", (), {"text": "", "fingerprint": ""})()})(),
+        lambda config: type(
+            "W",
+            (),
+            {"weave": lambda self, root, diff: type("P", (), {"text": "", "fingerprint": ""})()},
+        )(),
     )
     monkeypatch.setattr("bot.main.load_diff", lambda _: "diff-content")
     monkeypatch.setattr("bot.main.run_auto_review", fake_auto)

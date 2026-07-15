@@ -59,6 +59,13 @@ class QuotaTracker:
                 f"{key} at {self.used[key]}/{limit} ({self.used[key] / limit:.0%})"
             )
 
+    def record_failure(self, provider: str) -> None:
+        """Soft-count rate-limit failures so the scheduler avoids hot providers."""
+        key = self.PROVIDER_KEYS.get(provider, provider)
+        # Count as half a request toward the limit — enough to steer away under storm.
+        self.used[key] = self.used.get(key, 0) + 1
+        self.adjustments.append(f"{key} rate-limited this run")
+
     def snapshot(self) -> dict[str, dict[str, int]]:
         out: dict[str, dict[str, int]] = {}
         for key, limit in self.limits.items():

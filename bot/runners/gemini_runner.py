@@ -29,6 +29,9 @@ class GeminiRunner(BaseRunner):
         super().__init__(api_key or os.getenv("GOOGLE_API_KEY"), cache_config)
         self.model = model or self.DEFAULT_MODEL
         self._last_raw_response: str | None = None
+        self._last_http_status: int | None = None
+        self._last_retry_after: float | None = None
+        self._last_timed_out: bool = False
 
     def _run_review(self, diff: ParsedDiff) -> ReviewResult | None:
         if not self.api_key:
@@ -36,14 +39,27 @@ class GeminiRunner(BaseRunner):
             return None
 
         start_time = time.time()
+        self._last_http_status = None
+        self._last_retry_after = None
+        self._last_timed_out = False
 
         try:
             return self._call_api(diff, start_time)
         except requests.Timeout:
             logger.error("Gemini request timed out")
+            self._last_timed_out = True
             return self._timeout_result(start_time)
         except requests.RequestException as e:
             logger.error(f"Gemini request failed: {e}")
+            response = getattr(e, "response", None)
+            self._last_http_status = getattr(response, "status_code", None)
+            if response is not None:
+                raw = response.headers.get("Retry-After")
+                if raw:
+                    try:
+                        self._last_retry_after = float(raw)
+                    except ValueError:
+                        self._last_retry_after = None
             return None
 
     def _call_api(self, diff: ParsedDiff, start_time: float) -> ReviewResult:

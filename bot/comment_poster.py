@@ -174,6 +174,13 @@ class CommentPoster:
                     f"- Claim verifier: suppressed {suppressed} structural "
                     "false-positive(s) against PR-head symbol map"
                 )
+            sched = routing_meta.get("scheduler") or {}
+            if sched:
+                lines.append(
+                    f"- Scheduler: {sched.get('dispatches', 0)} dispatch(es), "
+                    f"{sched.get('skipped', 0)} skipped"
+                    + (f", stop={sched.get('stop_reason')}" if sched.get("stop_reason") else "")
+                )
             lines.extend(["", "</details>", ""])
 
         lines.extend([

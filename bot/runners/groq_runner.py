@@ -11,7 +11,6 @@ from loguru import logger
 from bot.config import CacheConfig
 from bot.diff_parser import ParsedDiff
 from bot.runners.base import BaseRunner, ReviewResult
-from bot.runners.json_schema import SchemaEncoder
 from bot.schemas import ReviewIssue
 from bot.utils.http_retry import post_with_retry
 
@@ -33,6 +32,9 @@ class GroqRunner(BaseRunner):
         self.model = model or self.DEFAULT_MODEL
         self.endpoint = endpoint or self.DEFAULT_ENDPOINT
         self._last_raw_response: str | None = None
+        self._last_http_status: int | None = None
+        self._last_retry_after: float | None = None
+        self._last_timed_out: bool = False
 
     def _run_review(self, diff: ParsedDiff) -> ReviewResult | None:
         if not self.api_key:
@@ -40,14 +42,27 @@ class GroqRunner(BaseRunner):
             return None
 
         start_time = time.time()
+        self._last_http_status = None
+        self._last_retry_after = None
+        self._last_timed_out = False
 
         try:
             return self._call_api(diff, start_time)
         except requests.Timeout:
             logger.error("Groq request timed out")
+            self._last_timed_out = True
             return self._timeout_result(start_time)
         except requests.RequestException as e:
             logger.error(f"Groq request failed: {e}")
+            response = getattr(e, "response", None)
+            self._last_http_status = getattr(response, "status_code", None)
+            if response is not None:
+                raw = response.headers.get("Retry-After")
+                if raw:
+                    try:
+                        self._last_retry_after = float(raw)
+                    except ValueError:
+                        self._last_retry_after = None
             return None
 
     def _call_api(self, diff: ParsedDiff, start_time: float) -> ReviewResult:
@@ -56,6 +71,7 @@ class GroqRunner(BaseRunner):
             "Authorization": f"Bearer {self.api_key}",
         }
 
+        # Prompt already requires raw JSON — skip response_format (often rejected).
         payload = {
             "model": self.model,
             "messages": [
@@ -70,21 +86,11 @@ class GroqRunner(BaseRunner):
             ],
             "temperature": 0.2,
             "max_tokens": 2048,
-            "response_format": SchemaEncoder.for_openai(),
         }
 
         logger.debug(f"Calling Groq with model: {self.model}")
 
-        try:
-            response = post_with_retry(self.endpoint, json=payload, headers=headers, timeout=120)
-        except requests.HTTPError as exc:
-            if payload.get("response_format") and self._is_json_mode_rejected(exc):
-                logger.warning("Groq rejected json_object mode; retrying without it")
-                payload = dict(payload)
-                payload.pop("response_format", None)
-                response = post_with_retry(self.endpoint, json=payload, headers=headers, timeout=120)
-            else:
-                raise
+        response = post_with_retry(self.endpoint, json=payload, headers=headers, timeout=120)
         latency_ms = (time.time() - start_time) * 1000
 
         data = response.json()
@@ -103,16 +109,6 @@ class GroqRunner(BaseRunner):
             tokens_used=tokens_used,
             review_type="groq",
         )
-
-    @staticmethod
-    def _is_json_mode_rejected(exc: requests.HTTPError) -> bool:
-        response = exc.response
-        if response is None:
-            return False
-        if response.status_code not in {400, 422}:
-            return False
-        body = (response.text or "").lower()
-        return "response_format" in body or "json" in body
 
     def _timeout_result(self, start_time: float) -> ReviewResult:
         return ReviewResult(
