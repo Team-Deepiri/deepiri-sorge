@@ -58,3 +58,8 @@ max_files_per_anchor = 3
 max_snippets = 5
 max_deps = 12
 max_chars = 2800
+
+[claim_verifier]
+enabled = true
+include_symbol_index = true
+max_index_chars = 2400
