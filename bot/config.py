@@ -105,6 +105,21 @@ class RepoContextConfig(BaseModel):
     max_chars: int = Field(default=2800, description="Character budget for repository context block")
 
 
+class ClaimVerifierConfig(BaseModel):
+    enabled: bool = Field(
+        default=True,
+        description="Post-filter structural LLM findings against PR-head symbol maps",
+    )
+    include_symbol_index: bool = Field(
+        default=True,
+        description="Inject a compact post-change symbol index into the review prompt",
+    )
+    max_index_chars: int = Field(
+        default=2400,
+        description="Character budget for the symbol index prompt block",
+    )
+
+
 class Config(BaseModel):
     sorge: dict[str, bool] = Field(default_factory=lambda: {"enabled": True})
     filters: FiltersConfig = Field(default_factory=FiltersConfig)
@@ -116,6 +131,7 @@ class Config(BaseModel):
     quota: QuotaConfig = Field(default_factory=QuotaConfig)
     cache: CacheConfig = Field(default_factory=CacheConfig)
     repo_context: RepoContextConfig = Field(default_factory=RepoContextConfig)
+    claim_verifier: ClaimVerifierConfig = Field(default_factory=ClaimVerifierConfig)
 
     @classmethod
     def from_file(cls, path: str) -> "Config":
