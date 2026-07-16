@@ -75,6 +75,7 @@ class SchedulerMeta:
     stop_reason: str | None = None
     health_snapshot: dict[str, float] = field(default_factory=dict)
     escalations: int = 0
+    escalation_blocked: int = 0
     avg_complexity: float | None = None
     retry_after_sec: float | None = None
 
@@ -88,6 +89,7 @@ class SchedulerMeta:
             "stop_reason": self.stop_reason,
             "health": self.health_snapshot,
             "escalations": self.escalations,
+            "escalation_blocked": self.escalation_blocked,
             "avg_complexity": self.avg_complexity,
             "retry_after_sec": self.retry_after_sec,
         }

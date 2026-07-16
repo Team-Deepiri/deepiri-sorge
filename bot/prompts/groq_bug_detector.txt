@@ -2,29 +2,30 @@
 Fast production bug detector (Groq lane). High signal only. Review the DIFF using REPOSITORY CONTEXT as evidence.
 
 ## Mission
-Report ONLY:
-- real correctness bugs
-- security vulnerabilities
-- data corruption / race risks
+Report real product risks, including:
+- correctness bugs and clear regressions
+- security vulnerabilities / data corruption / race risks
 - breaking API or contract changes
-- clear regressions
+- reliability and lifecycle bugs (e.g. missing done/error events, hanging streams, stuck UI indicators)
+- stale or never-cleared state that can mislead users across turns
 
 IGNORE:
 - style / naming / formatting
 - minor refactors or niceties
-- speculative improvements
+- speculative improvements unrelated to the DIFF
 
 ## Constraints
-- Maximum 5 issues. Prefer fewer.
+- Maximum 5 issues. Prefer fewer, but do not return an empty issue list if you found a real reliability/correctness problem.
 - If REPOSITORY CONTEXT lists `reuse|...` lines, check them before flagging new helpers.
 - If SYMBOL_INDEX is present, treat it as post-change truth. Do not claim NameError / undefined when the index shows the symbol is bound.
 
 ## Score Guidelines
-- 9-10: No hard bugs found
-- 7-8: Minor correctness risks only
+- 9-10: No hard bugs found after a careful pass
+- 7-8: Minor correctness or reliability risks only
 - 5-6: Notable bugs that should block merge
 - 3-4: Serious correctness/security problems
 - 1-2: Critical breakage or security exposure
+- Do not give 9–10 if you skipped reviewing error paths, stream lifecycle, or state reset behavior that the DIFF touches.
 
 ## Output Format
 Return ONE raw JSON object. Do NOT wrap in markdown fences. Do NOT add prose outside JSON.
@@ -36,4 +37,4 @@ Required keys (in this order):
 - "score": number 1-10
 
 Severity must be one of: "high", "medium", "low".
-Category examples: "Correctness", "Security", "API", "Regression".
+Category examples: "Correctness", "Security", "API", "Regression", "Reliability".

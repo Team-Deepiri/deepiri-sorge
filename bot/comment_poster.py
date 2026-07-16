@@ -251,6 +251,11 @@ class CommentPoster:
                     lines.append(f"- Avg complexity: `{sched.get('avg_complexity'):.2f}`")
                 if sched.get("escalations"):
                     lines.append(f"- Escalations: {sched.get('escalations')}")
+                if sched.get("escalation_blocked"):
+                    lines.append(
+                        f"- Escalation blocked: {sched.get('escalation_blocked')} "
+                        "(vacuous triage softened)"
+                    )
                 if sched.get("retry_after_sec"):
                     mins = max(1, int((float(sched["retry_after_sec"]) + 59) // 60))
                     lines.append(f"- Retry after: ~{mins} minute(s)")

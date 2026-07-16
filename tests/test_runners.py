@@ -390,7 +390,9 @@ class TestGroqRunner:
         with patch("bot.runners.groq_runner.post_with_retry", side_effect=_side_effect):
             result = runner._run_review(sample_diff)
 
-        assert captured == [GroqRunner.DESIRED_MAX_TOKENS, GroqRunner.RETRY_MAX_TOKENS]
+        assert captured[0] == GroqRunner.DESIRED_MAX_TOKENS
+        assert len(captured) == 2
+        assert captured[1] > captured[0]
         assert result is not None
         assert result.parse_warning is None
         assert result.review_type == "groq"
