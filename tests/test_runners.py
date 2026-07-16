@@ -337,7 +337,7 @@ class TestGroqRunner:
 
         assert result is None
 
-    def test_uses_8192_max_tokens_by_default(self, sample_diff):
+    def test_uses_desired_max_tokens_for_small_prompt(self, sample_diff):
         runner = GroqRunner(api_key="fake-groq-key")
         captured: list[dict] = []
 
@@ -349,7 +349,16 @@ class TestGroqRunner:
             runner._run_review(sample_diff)
 
         assert captured
-        assert captured[0]["max_tokens"] == GroqRunner.DEFAULT_MAX_TOKENS
+        assert captured[0]["max_tokens"] == GroqRunner.DESIRED_MAX_TOKENS
+
+    def test_caps_max_tokens_when_prompt_is_large(self, sample_diff):
+        runner = GroqRunner(api_key="fake-groq-key")
+        messages = runner._build_messages(sample_diff)
+        # Simulate emotion#81-sized input (~6065 tokens).
+        messages[1]["content"] = "x" * (6065 * 4)
+        capped = GroqRunner._cap_max_tokens(messages, GroqRunner.DESIRED_MAX_TOKENS)
+        assert capped < GroqRunner.DESIRED_MAX_TOKENS
+        assert capped >= GroqRunner.MIN_OUTPUT_TOKENS
 
     def test_retries_with_higher_max_tokens_when_truncated_and_unparsed(self, sample_diff):
         runner = GroqRunner(api_key="fake-groq-key")
@@ -382,7 +391,7 @@ class TestGroqRunner:
         with patch("bot.runners.groq_runner.post_with_retry", side_effect=_side_effect):
             result = runner._run_review(sample_diff)
 
-        assert captured == [8192, 16384]
+        assert captured == [GroqRunner.DESIRED_MAX_TOKENS, GroqRunner.RETRY_MAX_TOKENS]
         assert result is not None
         assert result.parse_warning is None
         assert result.review_type == "groq"
