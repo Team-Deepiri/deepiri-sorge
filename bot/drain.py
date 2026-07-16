@@ -100,8 +100,13 @@ def run_drain(
             logger.warning(f"Cannot post upgrade for ticket {ticket.ticket_id}")
             fail_ids.append(ticket.ticket_id)
             continue
-        ok = CommentPoster(token).post_review(ticket.repo, ticket.pr_number, result)
-        if ok:
+        ok = CommentPoster(token).post_review(
+            ticket.repo,
+            ticket.pr_number,
+            result,
+            edit_existing=True,
+        )
+        if ok is not None:
             done_ids.append(ticket.ticket_id)
             posted += 1
         else:

@@ -10,7 +10,7 @@ from bot.file_splitter import ReviewChunk
 from bot.scheduling.priority import prioritize_chunk
 
 # Soft threshold: at/above this, prefer deeper reasoning (Gemini) when healthy.
-COMPLEXITY_ESCALATE = 0.6
+COMPLEXITY_ESCALATE = 0.68
 # Path priority from prioritize_chunk — auth/security rules are 90+.
 SECURITY_PATH_PRIORITY = 90
 # Mirror Groq lane ceiling (local constant avoids circular import with market_score).

@@ -166,8 +166,10 @@ jobs:
           path: |
             ~/.cache/sorge/provider_stats.json
             ~/.cache/sorge/escalate_ledger.json
-          key: sorge-runtime-v2-${{ github.run_id }}
+            ~/.cache/sorge/quota_daily.json
+          key: sorge-runtime-v3-${{ github.run_id }}
           restore-keys: |
+            sorge-runtime-v3-
             sorge-runtime-v2-
             sorge-provider-stats-v1-
 
