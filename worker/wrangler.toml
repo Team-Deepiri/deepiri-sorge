@@ -2,5 +2,16 @@ name = "sorge-webhook"
 main = "src/index.js"
 compatibility_date = "2024-01-01"
 
+# Create KV then uncomment / set real id:
+#   npx wrangler kv namespace create SORGE_LEDGER
+# [[kv_namespaces]]
+# binding = "SORGE_LEDGER"
+# id = "REPLACE_ME"
+
+[triggers]
+crons = ["20 * * * *"]
+
 [vars]
-# Set secrets via: wrangler secret put GITHUB_WEBHOOK_SECRET
+# Secrets via wrangler secret put:
+#   GITHUB_WEBHOOK_SECRET, SORGE_APP_ID, SORGE_APP_PRIVATE_KEY,
+#   SORGE_LEDGER_SECRET, SORGE_DRAIN_INSTALLATION_ID

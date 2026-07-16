@@ -94,6 +94,10 @@ def run_auto_review(
     context_fingerprint: str,
     extra_chars: int = 0,
     only_provider: str | None = None,
+    repo: str = "",
+    pr_number: int = 0,
+    installation_id: int | None = None,
+    head_sha: str = "",
 ) -> ReviewResultSchema | None:
     """Phase 1: provider-centric scheduler owns dispatch — no worker fallback chain."""
     cache_config = config.cache if config.cache.enabled else None
@@ -127,6 +131,10 @@ def run_auto_review(
         repo_context=repo_context,
         context_fingerprint=context_fingerprint,
         prompt_overhead_tokens=TEMPLATE_OVERHEAD_TOKENS + max(0, extra_chars // 4),
+        repo=repo,
+        pr_number=pr_number,
+        installation_id=installation_id,
+        head_sha=head_sha,
     )
     logger.info(
         f"Scheduler starting: {len(runnable)} chunk(s), "
@@ -233,6 +241,10 @@ def main() -> None:
             repo_context=repo_context_text or None,
             context_fingerprint=context_fingerprint,
             extra_chars=extra_chars,
+            repo=args.repo or "",
+            pr_number=args.pr_number or 0,
+            installation_id=args.installation_id,
+            head_sha=os.getenv("SORGE_HEAD_SHA", ""),
         )
         if not review_result:
             logger.critical("All providers exhausted — review failed")
@@ -258,6 +270,10 @@ def main() -> None:
             context_fingerprint=context_fingerprint,
             extra_chars=extra_chars,
             only_provider=args.mode,
+            repo=args.repo or "",
+            pr_number=args.pr_number or 0,
+            installation_id=args.installation_id,
+            head_sha=os.getenv("SORGE_HEAD_SHA", ""),
         )
         if not review_result:
             logger.critical(f"Review failed: no result from {args.mode}")

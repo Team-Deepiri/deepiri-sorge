@@ -2,29 +2,24 @@
  * Sorge webhook dispatcher — triggers review only when /sorge slash command is used
  * on a PR comment (issue_comment event).
  *
+ * Also hosts the escalate ticket ledger (KV) and cron → sorge-drain dispatch.
+ *
  * Env vars:
  *   GITHUB_WEBHOOK_SECRET    — HMAC secret for verifying webhook payloads
- *   SORGE_APP_ID             — GitHub App ID (same one used by the Actions workflow / bot)
- *   SORGE_APP_PRIVATE_KEY    — GitHub App private key, PKCS#8 PEM format (see note below)
+ *   SORGE_APP_ID             — GitHub App ID
+ *   SORGE_APP_PRIVATE_KEY    — GitHub App private key, PKCS#8 PEM
  *   SORGE_DISPATCH_REPO      — Target repo for repository_dispatch (default: Team-Deepiri/deepiri-sorge)
  *   SORGE_BOT_LOGIN          — Extra command handle if bot login is not "sorge"
+ *   SORGE_LEDGER_SECRET      — Bearer token for /ledger/* from Actions
+ *
+ * Bindings:
+ *   SORGE_LEDGER (KV)        — escalate ticket store
  *
  * Deploy: npx wrangler deploy
- *
- * NOTE on private key format:
- *   GitHub issues App private keys in PKCS#1 format (-----BEGIN RSA PRIVATE KEY-----).
- *   The Web Crypto API (used here, since Workers don't have Node's crypto module)
- *   requires PKCS#8 (-----BEGIN PRIVATE KEY-----). Convert once with:
- *
- *     openssl pkcs8 -topk8 -nocrypt -in original-app-key.pem -out app-key-pkcs8.pem
- *
- *   Then store the *contents* of app-key-pkcs8.pem as the SORGE_APP_PRIVATE_KEY secret:
- *
- *     npx wrangler secret put SORGE_APP_PRIVATE_KEY
- *     (paste the full contents of app-key-pkcs8.pem, including header/footer lines)
  */
 
-const DISPATCH_EVENT = "sorge-review";
+const DISPATCH_EVENT_REVIEW = "sorge-review";
+const DISPATCH_EVENT_DRAIN = "sorge-drain";
 
 async function verifySignature(body, signature, secret) {
   if (!secret || !signature) return false;
@@ -60,7 +55,6 @@ export function hasSorgeSlashCommand(body, extraLogin) {
 
   return handles.some((handle) => {
     const escaped = escapeRegex(handle);
-    // /sorge, /Sorge, /sorge-ai, etc.
     const pattern = new RegExp(`/${escaped}(-[\\w-]+)?\\b`, "i");
     return pattern.test(body);
   });
@@ -90,7 +84,6 @@ function pemToArrayBuffer(pem) {
   return bytes.buffer;
 }
 
-/** Signs a GitHub App JWT (RS256) using the App's PKCS#8 private key. */
 async function createAppJwt(appId, privateKeyPem) {
   const now = Math.floor(Date.now() / 1000);
   const header = { alg: "RS256", typ: "JWT" };
@@ -122,7 +115,6 @@ async function createAppJwt(appId, privateKeyPem) {
   return `${signingInput}.${encodedSignature}`;
 }
 
-/** Exchanges the App JWT for a short-lived installation token, scoped to one repo. */
 async function getInstallationToken(env, installationId, repoName) {
   const jwt = await createAppJwt(env.SORGE_APP_ID, env.SORGE_APP_PRIVATE_KEY);
 
@@ -152,17 +144,19 @@ async function getInstallationToken(env, installationId, repoName) {
   return data.token;
 }
 
-async function dispatchReview(env, { repo, prNumber, installationId, trigger }) {
-  if (!repo || !prNumber || !installationId) {
-    return { skipped: true, reason: "missing repo, pr_number, or installation" };
-  }
-
+async function dispatchEvent(env, eventType, clientPayload = {}) {
   if (!env.SORGE_APP_ID || !env.SORGE_APP_PRIVATE_KEY) {
     return { error: "SORGE_APP_ID or SORGE_APP_PRIVATE_KEY not configured" };
   }
 
   const dispatchRepo = env.SORGE_DISPATCH_REPO || "Team-Deepiri/deepiri-sorge";
   const dispatchRepoName = dispatchRepo.split("/").pop();
+  // Prefer org installation id from payload when present; else look up via JWT list
+  let installationId = clientPayload.installation_id;
+  if (!installationId) {
+    // Use first installation that can access dispatch repo — caller should pass id for review
+    return { error: "installation_id required for dispatch" };
+  }
 
   let token;
   try {
@@ -171,36 +165,50 @@ async function dispatchReview(env, { repo, prNumber, installationId, trigger }) 
     return { error: `failed to mint installation token: ${err.message || err}` };
   }
 
-  const res = await fetch(
-    `https://api.github.com/repos/${dispatchRepo}/dispatches`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "Content-Type": "application/json",
-        "User-Agent": "sorge-webhook-worker",
-      },
-      body: JSON.stringify({
-        event_type: DISPATCH_EVENT,
-        client_payload: {
-          repo,
-          pr_number: prNumber,
-          installation_id: installationId,
-          trigger: trigger || "slash_command",
-          force: trigger === "slash_command",
-        },
-      }),
+  const res = await fetch(`https://api.github.com/repos/${dispatchRepo}/dispatches`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+      "Content-Type": "application/json",
+      "User-Agent": "sorge-webhook-worker",
     },
-  );
+    body: JSON.stringify({
+      event_type: eventType,
+      client_payload: clientPayload,
+    }),
+  });
 
   if (!res.ok) {
     const text = await res.text();
     return { error: `dispatch failed: ${res.status} ${text}` };
   }
 
-  return { ok: true, repo, pr_number: prNumber, trigger: trigger || "slash_command" };
+  return { ok: true, event_type: eventType };
+}
+
+async function dispatchReview(env, { repo, prNumber, installationId, trigger }) {
+  if (!repo || !prNumber || !installationId) {
+    return { skipped: true, reason: "missing repo, pr_number, or installation" };
+  }
+  return dispatchEvent(env, DISPATCH_EVENT_REVIEW, {
+    repo,
+    pr_number: prNumber,
+    installation_id: installationId,
+    trigger: trigger || "slash_command",
+    force: trigger === "slash_command",
+  });
+}
+
+async function dispatchDrain(env, installationId) {
+  if (!installationId) {
+    return { skipped: true, reason: "missing installation_id for drain dispatch" };
+  }
+  return dispatchEvent(env, DISPATCH_EVENT_DRAIN, {
+    installation_id: installationId,
+    trigger: "cron",
+  });
 }
 
 function handleIssueComment(payload, env) {
@@ -234,6 +242,115 @@ function handleIssueComment(payload, env) {
   });
 }
 
+function assertLedgerAuth(request, env) {
+  const auth = request.headers.get("Authorization") || "";
+  const token = auth.replace(/^Bearer\s+/i, "");
+  return Boolean(env.SORGE_LEDGER_SECRET && token === env.SORGE_LEDGER_SECRET);
+}
+
+async function loadLedger(env) {
+  if (!env.SORGE_LEDGER) return { tickets: [] };
+  const raw = await env.SORGE_LEDGER.get("tickets");
+  if (!raw) return { tickets: [] };
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return { tickets: [] };
+  }
+}
+
+async function saveLedger(env, data) {
+  if (!env.SORGE_LEDGER) return;
+  await env.SORGE_LEDGER.put("tickets", JSON.stringify(data));
+}
+
+async function handleLedger(request, env, url) {
+  if (!assertLedgerAuth(request, env)) {
+    return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401 });
+  }
+  if (!env.SORGE_LEDGER) {
+    return new Response(JSON.stringify({ error: "KV not bound" }), { status: 503 });
+  }
+
+  const data = await loadLedger(env);
+
+  if (url.pathname === "/ledger/tickets" && request.method === "POST") {
+    const body = await request.json();
+    const incoming = body.tickets || [];
+    const repos = new Set(
+      incoming
+        .filter((t) => t.repo && t.pr_number)
+        .map((t) => `${t.repo}#${t.pr_number}`),
+    );
+    for (const t of data.tickets) {
+      if (t.status === "pending" && repos.has(`${t.repo}#${t.pr_number}`)) {
+        t.status = "cancelled";
+      }
+    }
+    for (const t of incoming) {
+      data.tickets.push({ ...t, status: t.status || "pending" });
+    }
+    await saveLedger(env, data);
+    return json({ enqueued: incoming.length });
+  }
+
+  if (url.pathname === "/ledger/tickets" && request.method === "GET") {
+    if (url.searchParams.get("count_only") === "1") {
+      const pending = data.tickets.filter((t) => t.status === "pending").length;
+      return json({ pending });
+    }
+    const limit = Math.max(1, Math.min(20, parseInt(url.searchParams.get("limit") || "8", 10)));
+    const claimed = [];
+    const now = Date.now() / 1000;
+    for (const t of data.tickets) {
+      if (claimed.length >= limit) break;
+      if (t.status !== "pending") continue;
+      t.status = "claimed";
+      t.claimed_at = now;
+      claimed.push(t);
+    }
+    await saveLedger(env, data);
+    return json({ tickets: claimed });
+  }
+
+  if (url.pathname === "/ledger/tickets/ack" && request.method === "POST") {
+    const body = await request.json();
+    const ids = new Set(body.ticket_ids || []);
+    const status = body.status || "done";
+    for (const t of data.tickets) {
+      if (ids.has(t.ticket_id)) t.status = status;
+    }
+    await saveLedger(env, data);
+    return json({ acked: ids.size });
+  }
+
+  if (url.pathname === "/ledger/tickets/cancel" && request.method === "POST") {
+    const body = await request.json();
+    let n = 0;
+    for (const t of data.tickets) {
+      if (
+        t.repo === body.repo &&
+        Number(t.pr_number) === Number(body.pr_number) &&
+        t.status === "pending"
+      ) {
+        t.status = "cancelled";
+        n += 1;
+      }
+    }
+    await saveLedger(env, data);
+    return json({ cancelled: n });
+  }
+
+  return new Response("Not found", { status: 404 });
+}
+
+function json(obj, status = 200) {
+  return new Response(JSON.stringify(obj), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
 export default {
   async fetch(request, env) {
     try {
@@ -241,6 +358,10 @@ export default {
 
       if (url.pathname === "/health") {
         return new Response("ok", { status: 200 });
+      }
+
+      if (url.pathname.startsWith("/ledger/")) {
+        return handleLedger(request, env, url);
       }
 
       if (url.pathname !== "/webhook" || request.method !== "POST") {
@@ -277,13 +398,32 @@ export default {
       });
     } catch (err) {
       console.error("Unhandled error in fetch handler:", err.stack || err.message || err);
-      return new Response(
-        JSON.stringify({ error: String(err.message || err) }),
-        {
-          status: 500,
-          headers: { "Content-Type": "application/json" },
-        },
-      );
+      return new Response(JSON.stringify({ error: String(err.message || err) }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      });
     }
+  },
+
+  async scheduled(event, env, ctx) {
+    // Cron: dispatch sorge-drain when ledger has pending tickets.
+    // Uses SORGE_DRAIN_INSTALLATION_ID (org install that can dispatch to deepiri-sorge).
+    const installId = env.SORGE_DRAIN_INSTALLATION_ID || env.SORGE_DEFAULT_INSTALLATION_ID;
+    if (!installId) {
+      console.log("scheduled drain skipped: no SORGE_DRAIN_INSTALLATION_ID");
+      return;
+    }
+    if (env.SORGE_LEDGER) {
+      const data = await loadLedger(env);
+      const pending = (data.tickets || []).filter((t) => t.status === "pending").length;
+      if (pending === 0) {
+        console.log("scheduled drain skipped: no pending tickets");
+        return;
+      }
+      console.log(`scheduled drain: ${pending} pending ticket(s)`);
+    }
+    ctx.waitUntil(
+      dispatchDrain(env, installId).then((r) => console.log("drain dispatch", JSON.stringify(r))),
+    );
   },
 };

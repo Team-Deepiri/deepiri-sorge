@@ -38,6 +38,11 @@ class RunContext:
     history: object | None = None  # ProviderHistory; typed loosely to avoid cycles
     # Diff-token estimate ignores template + repo context; add this for eligibility.
     prompt_overhead_tokens: int = 0
+    # Optional identity for escalate ledger / drain upgrades.
+    repo: str = ""
+    pr_number: int = 0
+    installation_id: int | None = None
+    head_sha: str = ""
 
     def alive(self) -> bool:
         return time.monotonic() < self.deadline

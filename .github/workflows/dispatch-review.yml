@@ -1,24 +1,39 @@
 # Central dispatcher — triggered by GitHub App webhook (CF Worker) or manually.
 # Consumer repos need ZERO workflow YAML; install the Sorge GitHub App only.
+#
+# Modes (option A — one job):
+#   sorge-review / workflow_dispatch review → bot.main
+#   sorge-drain / schedule / workflow_dispatch drain → bot.drain
 
 name: Sorge Dispatch Review
 
 on:
   repository_dispatch:
-    types: [sorge-review]
+    types: [sorge-review, sorge-drain]
+  schedule:
+    # Backup drain if Worker cron is unavailable
+    - cron: "15 * * * *"
   workflow_dispatch:
     inputs:
-      repo:
-        description: "Target repo owner/name"
+      mode:
+        description: "review or drain"
         required: true
+        type: choice
+        options:
+          - review
+          - drain
+        default: review
+      repo:
+        description: "Target repo owner/name (review mode)"
+        required: false
         type: string
       pr_number:
-        description: "PR number"
-        required: true
+        description: "PR number (review mode)"
+        required: false
         type: number
       installation_id:
         description: "GitHub App installation ID"
-        required: true
+        required: false
         type: string
 
 permissions:
@@ -31,39 +46,66 @@ env:
   POETRY_VERSION: "1.8.2"
 
 jobs:
-  review:
-    name: Sorge Central Review
+  sorge:
+    name: Sorge Central
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
     steps:
-      - name: Resolve dispatch inputs
+      - name: Resolve mode and inputs
         id: inputs
         run: |
-          if [ -n "${{ github.event.client_payload.repo }}" ]; then
-            FULL_REPO="${{ github.event.client_payload.repo }}"
-            echo "PR_NUMBER=${{ github.event.client_payload.pr_number }}" >> "$GITHUB_OUTPUT"
-            echo "INSTALLATION_ID=${{ github.event.client_payload.installation_id }}" >> "$GITHUB_OUTPUT"
-            FORCE="${{ github.event.client_payload.force }}"
-          else
-            FULL_REPO="${{ inputs.repo }}"
-            echo "PR_NUMBER=${{ inputs.pr_number }}" >> "$GITHUB_OUTPUT"
-            echo "INSTALLATION_ID=${{ inputs.installation_id }}" >> "$GITHUB_OUTPUT"
-            FORCE=""
+          MODE="review"
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            MODE="drain"
+          elif [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            if [ "${{ github.event.action }}" = "sorge-drain" ]; then
+              MODE="drain"
+            else
+              MODE="review"
+            fi
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            MODE="${{ inputs.mode }}"
           fi
+          echo "MODE=$MODE" >> "$GITHUB_OUTPUT"
 
-          echo "REPO=${FULL_REPO}" >> "$GITHUB_OUTPUT"
-          echo "REPO_OWNER=${FULL_REPO%%/*}" >> "$GITHUB_OUTPUT"
-          echo "REPO_NAME=${FULL_REPO##*/}" >> "$GITHUB_OUTPUT"
-
-          if [ "$FORCE" = "true" ]; then
-            echo "FORCE_FLAG=--force" >> "$GITHUB_OUTPUT"
+          if [ "$MODE" = "review" ]; then
+            if [ -n "${{ github.event.client_payload.repo }}" ]; then
+              FULL_REPO="${{ github.event.client_payload.repo }}"
+              PR_NUMBER="${{ github.event.client_payload.pr_number }}"
+              echo "INSTALLATION_ID=${{ github.event.client_payload.installation_id }}" >> "$GITHUB_OUTPUT"
+              FORCE="${{ github.event.client_payload.force }}"
+            else
+              FULL_REPO="${{ inputs.repo }}"
+              PR_NUMBER="${{ inputs.pr_number }}"
+              echo "INSTALLATION_ID=${{ inputs.installation_id }}" >> "$GITHUB_OUTPUT"
+              FORCE=""
+            fi
+            if [ -z "$FULL_REPO" ] || [ -z "$PR_NUMBER" ]; then
+              echo "Review mode requires repo + pr_number" >&2
+              exit 1
+            fi
+            echo "REPO=${FULL_REPO}" >> "$GITHUB_OUTPUT"
+            echo "PR_NUMBER=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
+            echo "REPO_OWNER=${FULL_REPO%%/*}" >> "$GITHUB_OUTPUT"
+            echo "REPO_NAME=${FULL_REPO##*/}" >> "$GITHUB_OUTPUT"
+            if [ "$FORCE" = "true" ]; then
+              echo "FORCE_FLAG=--force" >> "$GITHUB_OUTPUT"
+            else
+              echo "FORCE_FLAG=" >> "$GITHUB_OUTPUT"
+            fi
           else
+            echo "REPO=" >> "$GITHUB_OUTPUT"
+            echo "REPO_OWNER=Team-Deepiri" >> "$GITHUB_OUTPUT"
+            echo "REPO_NAME=deepiri-sorge" >> "$GITHUB_OUTPUT"
+            echo "PR_NUMBER=drain" >> "$GITHUB_OUTPUT"
+            echo "INSTALLATION_ID=${{ inputs.installation_id }}" >> "$GITHUB_OUTPUT"
             echo "FORCE_FLAG=" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Generate App installation token
         id: app-token
+        if: steps.inputs.outputs.MODE == 'review'
         uses: actions/create-github-app-token@v1
         with:
           app-id: ${{ secrets.SORGE_APP_ID }}
@@ -72,14 +114,14 @@ jobs:
           repositories: ${{ steps.inputs.outputs.REPO_NAME }}
 
       - name: Debug token scope
+        if: steps.inputs.outputs.MODE == 'review'
         run: |
           echo "Installation ID passed in: '${{ steps.inputs.outputs.INSTALLATION_ID }}'"
           echo "Installation ID token action reports: '${{ steps.app-token.outputs.installation-id }}'"
           echo "Repo we're posting to: '${{ steps.inputs.outputs.REPO }}'"
-          echo "Owner used for token scope: '${{ steps.inputs.outputs.REPO_OWNER }}'"
-          echo "Repo name used for token scope: '${{ steps.inputs.outputs.REPO_NAME }}'"
 
       - name: Post starting message
+        if: steps.inputs.outputs.MODE == 'review'
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
@@ -95,6 +137,7 @@ jobs:
 
       - name: Resolve PR head SHA
         id: pr-head
+        if: steps.inputs.outputs.MODE == 'review'
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
@@ -108,6 +151,7 @@ jobs:
           echo "PR head SHA: $HEAD_SHA"
 
       - name: Checkout target repository
+        if: steps.inputs.outputs.MODE == 'review'
         uses: actions/checkout@v4
         with:
           repository: ${{ steps.inputs.outputs.REPO }}
@@ -116,12 +160,15 @@ jobs:
           fetch-depth: 1
           token: ${{ steps.app-token.outputs.token }}
 
-      - name: Restore provider history cache
+      - name: Restore provider + escalate ledger cache
         uses: actions/cache@v4
         with:
-          path: ~/.cache/sorge/provider_stats.json
-          key: sorge-provider-stats-v1-${{ github.run_id }}
+          path: |
+            ~/.cache/sorge/provider_stats.json
+            ~/.cache/sorge/escalate_ledger.json
+          key: sorge-runtime-v2-${{ github.run_id }}
           restore-keys: |
+            sorge-runtime-v2-
             sorge-provider-stats-v1-
 
       - name: Set up Python
@@ -147,12 +194,17 @@ jobs:
         run: poetry install --no-interaction --no-ansi
 
       - name: Run AI review
+        if: steps.inputs.outputs.MODE == 'review'
         env:
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           SORGE_APP_ID: ${{ secrets.SORGE_APP_ID }}
           SORGE_APP_PRIVATE_KEY: ${{ secrets.SORGE_APP_PRIVATE_KEY }}
+          SORGE_LEDGER_URL: ${{ secrets.SORGE_LEDGER_URL }}
+          SORGE_LEDGER_SECRET: ${{ secrets.SORGE_LEDGER_SECRET }}
+          SORGE_HEAD_SHA: ${{ steps.pr-head.outputs.HEAD_SHA }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -o pipefail
           INSTALL_FLAG=""
@@ -175,10 +227,25 @@ jobs:
             --mode auto \
             --verbose | tee review-output.json
 
-      - name: Upload review artifact
+      - name: Run escalate drain
+        if: steps.inputs.outputs.MODE == 'drain'
+        env:
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          SORGE_APP_ID: ${{ secrets.SORGE_APP_ID }}
+          SORGE_APP_PRIVATE_KEY: ${{ secrets.SORGE_APP_PRIVATE_KEY }}
+          SORGE_LEDGER_URL: ${{ secrets.SORGE_LEDGER_URL }}
+          SORGE_LEDGER_SECRET: ${{ secrets.SORGE_LEDGER_SECRET }}
+        run: |
+          set -o pipefail
+          poetry run python -m bot.drain --limit 8 --verbose | tee drain-output.json
+
+      - name: Upload artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: review-${{ steps.inputs.outputs.PR_NUMBER }}
-          path: review-output.json
+          name: sorge-${{ steps.inputs.outputs.MODE }}-${{ steps.inputs.outputs.PR_NUMBER || 'drain' }}
+          path: |
+            review-output.json
+            drain-output.json
           retention-days: 7
+          if-no-files-found: ignore
