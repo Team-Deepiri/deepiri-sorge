@@ -11,15 +11,19 @@ from bot.file_splitter import ReviewChunk
 from bot.providers.base import Provider
 from bot.quota_tracker import QuotaTracker
 from bot.scheduling.health import HealthTracker
+from bot.scheduling.history import ProviderHistory
 from bot.scheduling.market_score import score_provider
+from bot.scheduling.priority import prioritize_chunk, sort_key
 from bot.scheduling.run_context import ProviderRuntime, RunContext
 from bot.scheduling.token_bucket import TokenBucket
 from bot.scheduling.types import (
+    ProviderResult,
     SchedulerMeta,
     ScheduledChunk,
     SkipRecord,
 )
-from bot.schemas import ReviewResult
+from bot.schemas import ReviewResult, issues_from_parsed
+from bot.utils import cache as review_cache
 
 
 class ReviewScheduler:
@@ -58,6 +62,8 @@ class ReviewScheduler:
                 nominal_latency_ms=rt_cfg.nominal_latency_ms,
                 quality_prior=rt_cfg.quality_prior,
             )
+        cache_cfg = getattr(config, "cache", None)
+        history = ProviderHistory()
         ctx = RunContext(
             providers=runtimes,
             quota=quota,
@@ -65,28 +71,54 @@ class ReviewScheduler:
             repo_context=repo_context,
             context_fingerprint=context_fingerprint,
             health_threshold=config.scheduler.health_threshold,
+            cache_enabled=bool(cache_cfg and cache_cfg.enabled),
+            cache_ttl_hours=int(cache_cfg.ttl_hours) if cache_cfg else 24,
+            history=history,
         )
         return cls(providers, ctx, max_workers=config.scheduler.max_workers)
 
     def run(self, chunks: list[ReviewChunk]) -> tuple[list[ReviewResult], list[SkipRecord], SchedulerMeta]:
         queue = [
-            ScheduledChunk(chunk=c, priority=50)
+            ScheduledChunk(chunk=c, priority=prioritize_chunk(c))
             for c in chunks
             if not c.unreviewable
         ]
-        # Stable order: larger chunks first (more valuable), then FIFO
-        queue.sort(key=lambda s: (-s.chunk.estimated_tokens, -s.priority))
+        queue.sort(key=sort_key)
 
         results: list[ReviewResult] = []
         skipped: list[SkipRecord] = []
 
         while queue and self.ctx.alive():
-            # Drop cooling / exhausted state: try to dispatch as many as concurrency allows
+            # Serve cache hits without acquiring provider capacity
+            still_waiting: list[ScheduledChunk] = []
+            for scheduled in queue:
+                cached = self._try_cache_hit(scheduled)
+                if cached is not None:
+                    results.append(cached)
+                    self.meta.cache_hits += 1
+                    self.meta.provider_picks.append(
+                        {
+                            "provider": "cache",
+                            "tokens": scheduled.chunk.estimated_tokens,
+                            "priority": scheduled.priority,
+                            "ok": True,
+                            "status": 200,
+                        }
+                    )
+                else:
+                    still_waiting.append(scheduled)
+            queue = still_waiting
+            if not queue:
+                break
+
             desired = self._desired_workers()
             batch: list[tuple[ScheduledChunk, str]] = []
-            still_waiting: list[ScheduledChunk] = []
+            still_waiting = []
 
             for scheduled in queue:
+                if not self.ctx.alive():
+                    still_waiting.append(scheduled)
+                    continue
                 if len(batch) >= desired:
                     still_waiting.append(scheduled)
                     continue
@@ -100,19 +132,22 @@ class ReviewScheduler:
                 batch.append((scheduled, pick))
 
             if not batch:
-                # Nothing eligible right now — wait for shortest cooldown or give up
-                wait = self._min_cooldown()
+                wait = self._min_wake_sec()
                 if wait is None or wait > self.ctx.remaining_sec():
                     for s in still_waiting:
-                        skipped.append(SkipRecord(s.chunk, "no eligible provider (rate limits / health)"))
+                        skipped.append(
+                            SkipRecord(
+                                s.chunk,
+                                f"no eligible provider (priority={s.priority}; rate limits / health)",
+                            )
+                        )
                     self.meta.stop_reason = "providers_exhausted"
                     break
-                logger.info(f"Scheduler waiting {wait:.1f}s for provider cooldown")
+                logger.info(f"Scheduler waiting {wait:.1f}s for provider capacity")
                 time.sleep(min(wait, 15.0))
                 queue = still_waiting
                 continue
 
-            # Dispatch batch — workers only call provider.review; no fallback inside
             with ThreadPoolExecutor(max_workers=len(batch)) as pool:
                 futures = {
                     pool.submit(self._dispatch, scheduled, name): (scheduled, name)
@@ -136,6 +171,7 @@ class ReviewScheduler:
                         {
                             "provider": name,
                             "tokens": scheduled.chunk.estimated_tokens,
+                            "priority": scheduled.priority,
                             "ok": outcome.ok,
                             "status": outcome.status_code,
                         }
@@ -143,11 +179,18 @@ class ReviewScheduler:
 
                     if outcome.ok and outcome.result:
                         self._record_success(name, outcome.latency_ms)
+                        self._record_history(name, scheduled, ok=True, latency_ms=outcome.latency_ms)
                         self.ctx.quota.record(name)
+                        self._store_cache(scheduled, outcome.result)
                         results.append(outcome.result)
                     else:
                         self._record_failure(name, outcome)
-                        # Requeue for a different provider if any remain
+                        self._record_history(
+                            name,
+                            scheduled,
+                            ok=False,
+                            latency_ms=outcome.latency_ms,
+                        )
                         if self._has_untried_eligible(scheduled):
                             still_waiting.append(scheduled)
                         else:
@@ -158,24 +201,59 @@ class ReviewScheduler:
                                 )
                             )
 
+            still_waiting.sort(key=sort_key)
             queue = still_waiting
 
         if queue and not self.ctx.alive():
             self.meta.stop_reason = "deadline"
             for s in queue:
-                skipped.append(SkipRecord(s.chunk, "wall-clock deadline"))
+                skipped.append(
+                    SkipRecord(
+                        s.chunk,
+                        f"wall-clock deadline (priority={s.priority} not reached)",
+                    )
+                )
         elif queue and not skipped:
             for s in queue:
-                skipped.append(SkipRecord(s.chunk, "incomplete"))
+                skipped.append(SkipRecord(s.chunk, f"incomplete (priority={s.priority})"))
 
         self.meta.skipped = len(skipped)
         self.meta.health_snapshot = {
             name: rt.health.score for name, rt in self.ctx.providers.items()
         }
+        if isinstance(self.ctx.history, ProviderHistory):
+            self.ctx.history.save()
         return results, skipped, self.meta
 
+    def _try_cache_hit(self, scheduled: ScheduledChunk) -> ReviewResult | None:
+        if not self.ctx.cache_enabled:
+            return None
+        raw = scheduled.chunk.parsed_diff.raw
+        cached = review_cache.get_chunk(
+            raw,
+            self.ctx.cache_ttl_hours,
+            context_fingerprint=self.ctx.context_fingerprint,
+        )
+        if cached is None or cached.get("parse_warning"):
+            return None
+        logger.info(
+            f"Scheduler cache hit for chunk "
+            f"(priority={scheduled.priority}, tokens={scheduled.chunk.estimated_tokens})"
+        )
+        return _result_from_cache_dict(cached)
+
+    def _store_cache(self, scheduled: ScheduledChunk, result: ReviewResult) -> None:
+        if not self.ctx.cache_enabled or result.parse_warning:
+            return
+        review_cache.set_chunk(
+            scheduled.chunk.parsed_diff.raw,
+            result.to_dict(),
+            context_fingerprint=self.ctx.context_fingerprint,
+        )
+
     def _desired_workers(self) -> int:
-        healthy = 0
+        """Adaptive concurrency: sum of free inflight slots on healthy providers."""
+        slots = 0
         for name, rt in self.ctx.providers.items():
             if rt.health.is_cooling():
                 continue
@@ -185,8 +263,11 @@ class ReviewScheduler:
                 continue
             if not self.ctx.quota.can_use(name):
                 continue
-            healthy += 1
-        return max(1, min(self.max_workers, healthy or 1))
+            free = max(0, rt.max_inflight - rt.in_flight)
+            slots += free
+        if slots <= 0:
+            return 1
+        return max(1, min(self.max_workers, slots))
 
     def _pick_provider(self, scheduled: ScheduledChunk) -> str | None:
         best_name: str | None = None
@@ -207,10 +288,17 @@ class ReviewScheduler:
                 continue
             if not self.ctx.quota.can_use(name):
                 continue
+            hist_q = status.quality_prior
+            if isinstance(self.ctx.history, ProviderHistory):
+                hist_q = self.ctx.history.quality(
+                    name,
+                    scheduled.chunk,
+                    default=status.quality_prior,
+                )
             sc = score_provider(
                 status,
                 scheduled,
-                historical_quality=status.quality_prior,
+                historical_quality=hist_q,
             )
             if sc > best_score:
                 best_score = sc
@@ -225,18 +313,24 @@ class ReviewScheduler:
         )
         return self._pick_provider(probe) is not None
 
-    def _min_cooldown(self) -> float | None:
-        waits = [
-            rt.health.cooling_remaining()
-            for rt in self.ctx.providers.values()
-            if rt.health.is_cooling()
-        ]
+    def _min_wake_sec(self) -> float | None:
+        """Soonest capacity wake: cooling end or bucket refill for a token."""
+        waits: list[float] = []
+        for rt in self.ctx.providers.values():
+            cool = rt.health.cooling_remaining()
+            if cool > 0:
+                waits.append(cool)
+            if rt.bucket.remaining() < 1.0:
+                refill = rt.bucket.time_until(1.0)
+                if refill != float("inf"):
+                    waits.append(refill)
         return min(waits) if waits else None
 
-    def _dispatch(self, scheduled: ScheduledChunk, name: str):
+    def _dispatch(self, scheduled: ScheduledChunk, name: str) -> ProviderResult:
         provider = self.providers[name]
         logger.info(
-            f"Scheduler → {name} for chunk ({scheduled.chunk.estimated_tokens} tokens)"
+            f"Scheduler → {name} for chunk "
+            f"(priority={scheduled.priority}, tokens={scheduled.chunk.estimated_tokens})"
         )
         return provider.review(scheduled.chunk, self.ctx)
 
@@ -244,13 +338,28 @@ class ReviewScheduler:
         rt = self.ctx.providers[name]
         rt.health.record_success(latency_ms)
 
-    def _record_failure(self, name: str, outcome) -> None:
+    def _record_history(
+        self,
+        name: str,
+        scheduled: ScheduledChunk,
+        *,
+        ok: bool,
+        latency_ms: float,
+    ) -> None:
+        if isinstance(self.ctx.history, ProviderHistory):
+            self.ctx.history.record(
+                name,
+                scheduled.chunk,
+                ok=ok,
+                latency_ms=latency_ms,
+            )
+
+    def _record_failure(self, name: str, outcome: ProviderResult) -> None:
         rt = self.ctx.providers[name]
         if outcome.timed_out:
             rt.health.record_timeout()
         elif outcome.is_rate_limited:
             rt.health.record_rate_limit(outcome.retry_after)
-            # Soft-count failures so quota routing avoids hot providers
             self.ctx.quota.record_failure(name)
         elif outcome.is_payload_too_large:
             rt.health.record_payload_too_large()
@@ -258,3 +367,18 @@ class ReviewScheduler:
             rt.health.record_server_error()
         else:
             rt.health.record_server_error()
+
+
+def _result_from_cache_dict(data: dict) -> ReviewResult:
+    issues = issues_from_parsed({"issues": data.get("issues", [])})
+    return ReviewResult(
+        summary=data.get("summary", ""),
+        issues=issues,
+        recommendations=data.get("recommendations", []),
+        score=data.get("score", 7.0),
+        latency_ms=data.get("latency_ms", 0.0),
+        model=data.get("model", "cache"),
+        tokens_used=data.get("tokens_used"),
+        review_type=data.get("review_type", "cache"),
+        parse_warning=data.get("parse_warning"),
+    )

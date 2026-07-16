@@ -33,6 +33,9 @@ class RunContext:
     repo_context: str | None = None
     context_fingerprint: str = ""
     health_threshold: float = 25.0
+    cache_enabled: bool = False
+    cache_ttl_hours: int = 24
+    history: object | None = None  # ProviderHistory; typed loosely to avoid cycles
 
     def alive(self) -> bool:
         return time.monotonic() < self.deadline

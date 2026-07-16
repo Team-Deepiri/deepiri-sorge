@@ -116,6 +116,14 @@ jobs:
           fetch-depth: 1
           token: ${{ steps.app-token.outputs.token }}
 
+      - name: Restore provider history cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/sorge/provider_stats.json
+          key: sorge-provider-stats-v1-${{ github.run_id }}
+          restore-keys: |
+            sorge-provider-stats-v1-
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:

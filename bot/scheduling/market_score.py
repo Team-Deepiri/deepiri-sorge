@@ -43,14 +43,17 @@ def score_provider(
         return 0.0
 
     health_n = max(0.0, min(1.0, status.health / 100.0))
-    rpm_n = max(0.0, min(1.0, status.rpm_remaining / max(status.rpm_remaining + 1.0, 1.0)))
-    # Better: normalize by a soft cap using remaining relative to needing 1 token
-    rpm_n = 1.0 if status.rpm_remaining >= 1.0 else max(0.0, status.rpm_remaining)
+    # RPM: soft-cap remaining; penalize when already at max inflight
+    rpm_n = 0.0
+    if status.rpm_remaining >= 1.0:
+        rpm_n = min(1.0, 0.5 + 0.5 * min(status.rpm_remaining / 10.0, 1.0))
+        if status.in_flight >= status.max_inflight:
+            rpm_n *= 0.25
 
     return (
         w["health"] * health_n
         + w["latency"] * latency_score(status.nominal_latency_ms)
-        + w["rpm"] * min(1.0, rpm_n)
+        + w["rpm"] * rpm_n
         + w["context"] * fit
         + w["history"] * max(0.0, min(1.0, historical_quality))
     )

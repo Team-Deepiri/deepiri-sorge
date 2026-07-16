@@ -33,3 +33,13 @@ class TokenBucket:
         with self._lock:
             self._refill()
             return self._tokens
+
+    def time_until(self, amount: float = 1.0) -> float:
+        """Seconds until ``amount`` tokens are available (0 if already)."""
+        with self._lock:
+            self._refill()
+            if self._tokens >= amount:
+                return 0.0
+            if self.rate_per_sec <= 0:
+                return float("inf")
+            return (amount - self._tokens) / self.rate_per_sec

@@ -61,6 +61,7 @@ class SkipRecord:
 class SchedulerMeta:
     rung: str = "scheduled"
     dispatches: int = 0
+    cache_hits: int = 0
     provider_picks: list[dict[str, Any]] = field(default_factory=list)
     skipped: int = 0
     stop_reason: str | None = None
@@ -70,6 +71,7 @@ class SchedulerMeta:
         return {
             "rung": self.rung,
             "dispatches": self.dispatches,
+            "cache_hits": self.cache_hits,
             "provider_picks": self.provider_picks,
             "skipped": self.skipped,
             "stop_reason": self.stop_reason,
