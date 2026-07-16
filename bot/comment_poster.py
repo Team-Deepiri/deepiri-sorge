@@ -42,10 +42,14 @@ class CommentPoster:
         review: ReviewResult,  # type: ignore
         commit_id: str | None = None,
         *,
-        edit_existing: bool = False,
+        edit_existing: bool = True,
         preferred_comment_id: int | None = None,
     ) -> int | None:
-        """Post (or optionally edit) a review comment. Returns comment id on success."""
+        """Post or edit the anchored Sorge review comment. Returns comment id on success.
+
+        Defaults to upsert so repeated `/sorge` runs (and rate-limit deferrals) edit
+        the same comment instead of stacking duplicates.
+        """
         comment_body = self._format_review_comment(review)
         if edit_existing:
             return self.upsert_comment(
