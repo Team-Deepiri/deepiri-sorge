@@ -103,3 +103,22 @@ class TestCommentPosterFormatting:
 
         assert ":information_source: General" in body
         assert "> Watch this area" in body
+
+    def test_format_rate_limited_comment_omits_quality_score(self):
+        review = ReviewResult(
+            summary="Review deferred — free-tier provider rate limits were hit.",
+            issues=[],
+            recommendations=["Wait a few minutes, then comment `/sorge` again"],
+            score=0.0,
+            model="none",
+            latency_ms=0.0,
+            review_type="rate_limited",
+        )
+
+        body = CommentPoster()._format_review_comment(review)
+
+        assert "Temporarily unavailable" in body
+        assert "Quality Score" not in body
+        assert "needs redesign" not in body
+        assert "/sorge" in body
+        assert "not a code review result" in body

@@ -63,3 +63,30 @@ max_chars = 2800
 enabled = true
 include_symbol_index = true
 max_index_chars = 2400
+[scheduler]
+wall_clock_sec = 720
+max_workers = 4
+health_threshold = 25.0
+partial_on_exhausted = true
+
+[providers.groq]
+rpm = 30
+max_inflight = 1
+# Free-tier window is ~8k including template + repo context; 413 shrinks further at runtime
+max_context_tokens = 7000
+quality_prior = 0.9
+nominal_latency_ms = 400
+
+[providers.openrouter]
+rpm = 20
+max_inflight = 1
+max_context_tokens = 100000
+quality_prior = 0.7
+nominal_latency_ms = 800
+
+[providers.gemini]
+rpm = 10
+max_inflight = 1
+max_context_tokens = 200000
+quality_prior = 0.85
+nominal_latency_ms = 1200

@@ -81,7 +81,66 @@ class CommentPoster:
             logger.error(f"Failed to post comment: {e}")
             return False
 
+    def _format_rate_limited_comment(self, review: ReviewResult) -> str:  # type: ignore
+        lines = [
+            "## Sorge AI Code Review",
+            "",
+            "**Status:** Temporarily unavailable — provider rate limits",
+            "",
+            "---",
+            "",
+            "### What happened",
+            clean_multiline_text(review.summary),
+            "",
+        ]
+        if review.recommendations:
+            lines.extend(["### What to do", ""])
+            for rec in review.recommendations:
+                lines.append(f"- {normalize_whitespace(rec)}")
+            lines.append("")
+
+        routing_meta = getattr(review, "routing_meta", None)
+        if routing_meta:
+            sched = routing_meta.get("scheduler") or {}
+            picks = sched.get("provider_picks") or []
+            detail_lines = []
+            if picks:
+                summary = ", ".join(
+                    f"{p.get('provider')}({'ok' if p.get('ok') else 'fail'})"
+                    for p in picks[:8]
+                )
+                more = f" +{len(picks) - 8} more" if len(picks) > 8 else ""
+                detail_lines.append(f"- Picks: {summary}{more}")
+            if sched.get("stop_reason"):
+                detail_lines.append(f"- Stop: `{sched.get('stop_reason')}`")
+            if detail_lines:
+                lines.extend(
+                    [
+                        "<details>",
+                        "<summary>Routing details</summary>",
+                        "",
+                        *detail_lines,
+                        "",
+                        "</details>",
+                        "",
+                    ]
+                )
+
+        lines.extend(
+            [
+                "---",
+                "",
+                "*No quality score was computed — this is not a code review result.*",
+                "",
+                "*Review deferred by [deepiri-sorge](https://github.com/deepiri/deepiri-sorge)*",
+            ]
+        )
+        return "\n".join(lines)
+
     def _format_review_comment(self, review: ReviewResult) -> str:  # type: ignore
+        if getattr(review, "review_type", "") == "rate_limited":
+            return self._format_rate_limited_comment(review)
+
         lines = [
             "## Sorge AI Code Review",
             "",
@@ -174,6 +233,27 @@ class CommentPoster:
                     f"- Claim verifier: suppressed {suppressed} structural "
                     "false-positive(s) against PR-head symbol map"
                 )
+            sched = routing_meta.get("scheduler") or {}
+            if sched:
+                cache_hits = sched.get("cache_hits", 0)
+                cache_bit = f", {cache_hits} cache hit(s)" if cache_hits else ""
+                lines.append(
+                    f"- Scheduler: {sched.get('dispatches', 0)} dispatch(es), "
+                    f"{sched.get('skipped', 0)} skipped{cache_bit}"
+                    + (f", stop={sched.get('stop_reason')}" if sched.get("stop_reason") else "")
+                )
+                health = sched.get("health") or {}
+                if health:
+                    parts = [f"{k}={v:.0f}" for k, v in sorted(health.items())]
+                    lines.append(f"- Provider health: {', '.join(parts)}")
+                picks = sched.get("provider_picks") or []
+                if picks:
+                    summary = ", ".join(
+                        f"{p.get('provider')}({'ok' if p.get('ok') else 'fail'})"
+                        for p in picks[:8]
+                    )
+                    more = f" +{len(picks) - 8} more" if len(picks) > 8 else ""
+                    lines.append(f"- Picks: {summary}{more}")
             lines.extend(["", "</details>", ""])
 
         lines.extend([

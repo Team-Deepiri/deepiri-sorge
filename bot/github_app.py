@@ -97,18 +97,7 @@ def get_installation_token(
 
 
 def fetch_pr_diff(repo: str, pr_number: int, token: str) -> str:
-    """Fetch unified diff for a PR.
+    """Fetch unified diff for a PR (monolithic, or DiffAssembler on 406 too_large)."""
+    from bot.diff_assembler import assemble_pr_diff
 
-    Uses raw requests because ghapi's REST client expects JSON responses,
-    while this endpoint needs Accept: application/vnd.github.v3.diff
-    which returns raw text instead of JSON.
-    """
-    url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github.v3.diff",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-    resp = requests.get(url, headers=headers, timeout=120)
-    resp.raise_for_status()
-    return resp.text
+    return assemble_pr_diff(repo, pr_number, token)
