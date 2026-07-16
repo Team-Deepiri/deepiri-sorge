@@ -3,7 +3,7 @@
 **On-demand AI PR review bot for GitHub — powered by Gemini, OpenRouter, and Groq**
 ---
 ```
-PR /sorge command → Cloudflare Worker → repository_dispatch → Decision Engine → [Skip | Groq | OpenRouter | Gemini] → PR Comment
+PR /sorge → Cloudflare Worker → repository_dispatch → filters → ReviewScheduler → providers → PR Comment
 ```
 
 ## The Problem
@@ -19,9 +19,9 @@ Traditional AI code review bots require:
 A GitHub-native, on-demand AI review bot that:
 
 1. **Runs in GitHub Actions** — Zero infrastructure to manage
-2. **Routes to optimal LLM** — Groq for small PRs, OpenRouter for medium, Gemini for large
+2. **Schedules providers as backends** — market-scored pick among Groq / OpenRouter / Gemini (no worker-owned fallback stampede)
 3. **Smart filtering** — Skips docs-only, dependency-only, and trivial PRs when not forced
-4. **Provider failover** — Falls back through the provider chain if quotas are exhausted
+4. **Priority + partial review** — security/auth chunks first; low-priority may skip under rate limits or deadline
 
 ### Architecture
 
@@ -38,17 +38,19 @@ A GitHub-native, on-demand AI review bot that:
                       │
                       ▼
 ┌─────────────────────────────────────────────┐
-│           Decision Engine                    │
-│  (line count, file types, security scan)     │
-└────────┬──────────────┬──────────────┬───────┘
-         │              │              │
-         ▼              ▼              ▼
+│     Filters (DecisionEngine) + FileSplitter  │
+└─────────────────────┬───────────────────────┘
+                      │
+                      ▼
+┌─────────────────────────────────────────────┐
+│              ReviewScheduler                 │
+│  priority queue · token buckets · health     │
+│  market score · chunk cache · history EMA    │
+└───────┬─────────────────┬────────────┬──────┘
+        ▼                 ▼            ▼
    ┌──────────┐  ┌────────────┐  ┌──────────┐
    │   Groq   │  │ OpenRouter │  │  Gemini  │
-   │ (small)  │  │ (medium)   │  │ (large)  │
    └──────────┘  └────────────┘  └──────────┘
-         │              │              │
-         └──────────────┴──────────────┘
                       │
                       ▼
 ┌─────────────────────────────────────────────┐
@@ -65,12 +67,13 @@ A GitHub-native, on-demand AI review bot that:
 ## Features
 
 - **On-demand reviews**: Triggered by commenting `/sorge` on a PR — no auto-run on every push
-- **Multiple LLM providers**: Routes PRs to Groq, OpenRouter, or Gemini based on size
-- **Automatic failover**: Falls through the provider chain if quotas are exhausted
+- **Provider-centric scheduler**: RPM token buckets, continuous health, adaptive concurrency
+- **Market scoring**: health · latency · RPM · context fit · historical quality (5%)
+- **Path priority**: auth/security before docs/lockfiles under pressure
+- **Scheduler chunk cache**: skip duplicate provider calls for the same diff+context
 - **Smart filtering**: Skips docs-only, dependency-only, test-only, and trivial PRs (overridable with `/sorge`)
-- **Configurable routing**: Per-repo thresholds via `sorge.toml` and environment variables
+- **Configurable**: Per-repo thresholds via `sorge.toml` and environment variables
 - **GitHub App support**: Webhook-based dispatch via Cloudflare Worker — no YAML in consumer repos
-- **Provider-agnostic**: Swap providers or add new ones via the runner interface
 - **Cost tracking**: Built-in quota management per provider
 
 ## Quick Start
@@ -103,9 +106,29 @@ include_security = true
 include_performance = true
 
 [routing]
-small_pr_threshold = 5000   # Groq for small PRs
-medium_pr_threshold = 200000 # OpenRouter for medium PRs
-large_pr_threshold = 200000  # Gemini for large PRs
+small_pr_threshold = 5000
+medium_pr_threshold = 200000
+large_pr_threshold = 200000
+
+[scheduler]
+wall_clock_sec = 720
+max_workers = 4
+health_threshold = 25.0
+
+[providers.groq]
+rpm = 30
+max_inflight = 1
+max_context_tokens = 8000
+
+[providers.openrouter]
+rpm = 20
+max_inflight = 1
+max_context_tokens = 100000
+
+[providers.gemini]
+rpm = 10
+max_inflight = 1
+max_context_tokens = 200000
 ```
 
 ## Usage
@@ -127,12 +150,12 @@ pytest tests/
 
 1. **`/sorge` Command** → Someone comments `/sorge` on a PR; the Cloudflare Worker detects the slash command
 2. **Dispatch** → Worker sends a `repository_dispatch` to the central `deepiri-sorge` repo
-3. **Diff Extraction** → Fetches and parses the PR diff
+3. **Diff Extraction** → Fetches and parses the PR diff (checks out **PR head**)
 4. **Filtering** → Decision engine applies rules: skip docs-only, deps-only, test-only, or below min_lines (overridden when triggered via `/sorge`)
-5. **Routing** → Routes the diff to the optimal provider based on token estimate
-6. **Review** → Provider (Groq / OpenRouter / Gemini) generates structured review
-7. **Fallback** → If the primary provider fails or quota is exhausted, falls through the preference chain
-8. **Post Comment** → Formats and posts the review to the PR
+5. **Schedule** → FileSplitter chunks the diff; scheduler prioritizes paths and picks a provider via market score
+6. **Review** → One provider call per dispatch (adapters wrap Groq / OpenRouter / Gemini runners)
+7. **Partial under pressure** → On 429/deadline, high-priority chunks finish; others may be skipped with an explicit note
+8. **Post Comment** → Formats and posts the review to the PR (routing details include scheduler meta)
 
 ## Cost Breakdown
 
@@ -154,50 +177,11 @@ deepiri-sorge/
 ├── bot/                     # Core bot code
 │   ├── main.py             # Entry point & dispatch
 │   ├── config.py           # Configuration (Pydantic)
-│   ├── decision_engine.py  # PR filtering & routing
-│   ├── context_router.py   # Token-aware provider routing
+│   ├── decision_engine.py  # PR filtering
+│   ├── scheduling/         # ReviewScheduler platform
+│   ├── providers/          # Groq / OpenRouter / Gemini adapters
 │   ├── comment_poster.py   # GitHub API integration
-│   ├── runners/            # LLM provider runners
-│   │   ├── gemini_runner.py
-│   │   ├── openrouter_runner.py
-│   │   └── groq_runner.py
-│   └── prompts/            # Review templates
-├── worker/                 # Cloudflare Worker (webhook dispatch)
-├── tests/                  # Test suite
-└── docs/                   # Documentation
+│   ├── runners/            # LLM HTTP runners
 ```
 
-## Releases (CD)
-
-Pushing a semver tag triggers [`.github/workflows/cd.yml`](.github/workflows/cd.yml):
-
-1. Runs the test suite
-2. Creates a [GitHub Release](https://github.com/Team-Deepiri/deepiri-sorge/releases)
-3. Publishes `ghcr.io/team-deepiri/deepiri-sorge:<tag>`
-
-```bash
-git tag v0.2.0
-git push origin v0.2.0
-```
-
-## Releases (CD)
-
-Pushing a semver tag triggers [`.github/workflows/cd.yml`](.github/workflows/cd.yml):
-
-1. Runs the test suite
-2. Creates a [GitHub Release](https://github.com/Team-Deepiri/deepiri-sorge/releases)
-3. Publishes `ghcr.io/team-deepiri/deepiri-sorge:<tag>`
-
-```bash
-git tag v0.2.0
-git push origin v0.2.0
-```
-
-Consumer workflows should pin the same tag for `uses:` and `bot_ref:`.
-
-## Credits
-_Designed by  Justin Yoo & Joe Black_
-
-## License
-
-Copyright 2026 Deepiri. Licensed under Apache License 2.0.
+See [docs/SETUP.md](docs/SETUP.md) for secrets and local setup.

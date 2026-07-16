@@ -11,6 +11,14 @@ from loguru import logger
 
 CACHE_DIR = Path.home() / ".cache" / "sorge" / "reviews"
 
+# Provider-agnostic key used by the scheduler so a hit skips acquire entirely.
+CHUNK_CACHE_MODEL = "__chunk__"
+
+
+def chunk_fingerprint(diff_raw: str, context_fingerprint: str = "") -> str:
+    """Stable id for a chunk independent of which provider produced the result."""
+    return hashlib.sha256(f"{context_fingerprint}:{diff_raw}".encode()).hexdigest()
+
 
 def _cache_path(diff_raw: str, model: str, context_fingerprint: str = "") -> Path:
     key = hashlib.sha256(f"{model}:{context_fingerprint}:{diff_raw}".encode()).hexdigest()
@@ -76,3 +84,35 @@ def clear_all() -> int:
         count += 1
     logger.info(f"Cleared {count} cache entries")
     return count
+
+
+def get_chunk(
+    diff_raw: str,
+    ttl_hours: int = 24,
+    *,
+    context_fingerprint: str = "",
+) -> dict | None:
+    """Return a prior good review for this diff+context, any provider."""
+    return get(
+        diff_raw,
+        CHUNK_CACHE_MODEL,
+        ttl_hours,
+        context_fingerprint=context_fingerprint,
+    )
+
+
+def set_chunk(
+    diff_raw: str,
+    result: dict,
+    *,
+    context_fingerprint: str = "",
+) -> None:
+    """Store a provider-agnostic chunk result for future scheduler hits."""
+    if result.get("parse_warning"):
+        return
+    set(
+        diff_raw,
+        CHUNK_CACHE_MODEL,
+        result,
+        context_fingerprint=context_fingerprint,
+    )

@@ -108,13 +108,17 @@ This creates a virtual environment and installs all dependencies
 
 ---
 
-## Provider Limits & Routing
+## Provider Limits & Scheduling
 
-| Provider | Daily Limit | Context Window | Best For |
-|----------|-------------|----------------|----------|
-| Groq (GPT OSS 120B) | 1000 req/day | 8K | Small PRs (<5000 tokens) |
-| OpenRouter (Gemma 4) | 50 req/day | 1M | Medium PRs (5000–200K tokens) |
-| Gemini 2.5 Flash | 20 req/day | 1M | Large PRs (>200K tokens) |
+Providers are **execution backends** for the `ReviewScheduler`. The scheduler picks among healthy providers using a market score (health, latency, RPM remaining, context fit, historical quality). Size thresholds in `[routing]` still influence chunk budgets; they are no longer a hard "Groq then OpenRouter then Gemini" failover chain.
+
+| Provider | Daily Limit | Context Window | Notes |
+|----------|-------------|----------------|-------|
+| Groq (GPT OSS 120B) | 1000 req/day | 8K | Fast; small context |
+| OpenRouter (free models) | 50 req/day | large | Medium/large chunks |
+| Gemini 2.5 Flash | 20 req/day | 1M | Large context |
+
+Provider outcome history is stored in `~/.cache/sorge/provider_stats.json` (EMA by size×language) and restored across Actions runs via cache.
 
 ---
 
@@ -127,32 +131,58 @@ Edit `sorge.toml` to customize:
 enabled = true
 
 [filters]
-min_lines = 20          # Skip PRs smaller than this
-skip_docs = true        # Skip docs-only PRs
-skip_deps = true        # Skip dependency-only PRs
-skip_tests = false      # Skip test-only PRs
+min_lines = 20
+skip_docs = true
+skip_deps = true
+skip_tests = false
 
 [review]
-style = "concise"       # concise | detailed | minimal
+style = "concise"
 include_security = true
 include_performance = true
 
 [gemini]
-enabled = true          # Enable Gemini (default: on)
+enabled = true
 model = "gemini-2.5-flash"
 
 [openrouter]
-enabled = true          # Enable OpenRouter (default: on)
-model = "google/gemma-4-31b-it:free"
+enabled = true
 
 [groq]
-enabled = true          # Enable Groq (default: on)
+enabled = true
 model = "openai/gpt-oss-120b"
 
 [routing]
-small_pr_threshold = 5000     # Groq for diffs under this many tokens
-medium_pr_threshold = 200000  # OpenRouter for diffs under this many tokens
-large_pr_threshold = 200000   # Gemini for diffs over this many tokens
+small_pr_threshold = 5000
+medium_pr_threshold = 200000
+large_pr_threshold = 200000
+
+[scheduler]
+wall_clock_sec = 720
+max_workers = 4
+health_threshold = 25.0
+partial_on_exhausted = true
+
+[providers.groq]
+rpm = 30
+max_inflight = 1
+max_context_tokens = 8000
+quality_prior = 0.9
+nominal_latency_ms = 400
+
+[providers.openrouter]
+rpm = 20
+max_inflight = 1
+max_context_tokens = 100000
+quality_prior = 0.7
+nominal_latency_ms = 800
+
+[providers.gemini]
+rpm = 10
+max_inflight = 1
+max_context_tokens = 200000
+quality_prior = 0.85
+nominal_latency_ms = 1200
 ```
 
-Defaults are tuned for typical PRs, so you likely don't need to change anything.
+Defaults are tuned for free-tier RPM; raise `rpm` / `max_inflight` only if your keys allow it.

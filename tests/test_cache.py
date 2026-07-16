@@ -97,3 +97,16 @@ class TestCacheInvalidateAndClear:
 
     def test_clear_all_empty_cache_returns_zero(self):
         assert _cache.clear_all() == 0
+
+
+class TestChunkCache:
+    def test_chunk_cache_provider_agnostic(self):
+        _cache.set_chunk(DIFF, RESULT, context_fingerprint="ctx")
+        assert _cache.get_chunk(DIFF, context_fingerprint="ctx") == RESULT
+        assert _cache.get(DIFF, MODEL, context_fingerprint="ctx") is None
+
+    def test_chunk_fingerprint_stable(self):
+        a = _cache.chunk_fingerprint(DIFF, "ctx")
+        b = _cache.chunk_fingerprint(DIFF, "ctx")
+        assert a == b
+        assert a != _cache.chunk_fingerprint(DIFF, "other")

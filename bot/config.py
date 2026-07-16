@@ -120,6 +120,41 @@ class ClaimVerifierConfig(BaseModel):
     )
 
 
+class ProviderRuntimeConfig(BaseModel):
+    rpm: float = Field(default=30.0, description="Requests per minute token-bucket rate")
+    max_inflight: int = Field(default=1, description="Max concurrent calls to this provider")
+    max_context_tokens: int = Field(default=8000, description="Max chunk tokens this provider accepts")
+    quality_prior: float = Field(default=0.8, description="Cold-start quality prior for market score")
+    nominal_latency_ms: float = Field(default=800.0, description="Expected latency for scoring")
+
+
+class ProvidersConfig(BaseModel):
+    groq: ProviderRuntimeConfig = Field(
+        default_factory=lambda: ProviderRuntimeConfig(
+            rpm=30, max_inflight=1, max_context_tokens=8000, quality_prior=0.9, nominal_latency_ms=400
+        )
+    )
+    openrouter: ProviderRuntimeConfig = Field(
+        default_factory=lambda: ProviderRuntimeConfig(
+            rpm=20, max_inflight=1, max_context_tokens=100000, quality_prior=0.7, nominal_latency_ms=800
+        )
+    )
+    gemini: ProviderRuntimeConfig = Field(
+        default_factory=lambda: ProviderRuntimeConfig(
+            rpm=10, max_inflight=1, max_context_tokens=200000, quality_prior=0.85, nominal_latency_ms=1200
+        )
+    )
+
+
+class SchedulerConfig(BaseModel):
+    wall_clock_sec: int = Field(default=720, description="Max seconds for scheduled review")
+    max_workers: int = Field(default=4, description="Upper bound on adaptive concurrency")
+    health_threshold: float = Field(default=25.0, description="Skip providers below this health score")
+    partial_on_exhausted: bool = Field(
+        default=True, description="Return partial review when providers are exhausted"
+    )
+
+
 class Config(BaseModel):
     sorge: dict[str, bool] = Field(default_factory=lambda: {"enabled": True})
     filters: FiltersConfig = Field(default_factory=FiltersConfig)
@@ -132,6 +167,8 @@ class Config(BaseModel):
     cache: CacheConfig = Field(default_factory=CacheConfig)
     repo_context: RepoContextConfig = Field(default_factory=RepoContextConfig)
     claim_verifier: ClaimVerifierConfig = Field(default_factory=ClaimVerifierConfig)
+    providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
+    scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
 
     @classmethod
     def from_file(cls, path: str) -> "Config":
