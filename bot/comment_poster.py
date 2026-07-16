@@ -102,11 +102,16 @@ class CommentPoster:
         routing_meta = getattr(review, "routing_meta", None)
         if routing_meta:
             sched = routing_meta.get("scheduler") or {}
+            retry_sec = sched.get("retry_after_sec")
+            if retry_sec:
+                mins = max(1, int((float(retry_sec) + 59) // 60))
+                lines.extend([f"**Retry in ~{mins} minute(s)**", ""])
             picks = sched.get("provider_picks") or []
             detail_lines = []
             if picks:
                 summary = ", ".join(
-                    f"{p.get('provider')}({'ok' if p.get('ok') else 'fail'})"
+                    f"{p.get('provider')}({'ok' if p.get('ok') else 'fail'}"
+                    f"|{p.get('reason', '?')})"
                     for p in picks[:8]
                 )
                 more = f" +{len(picks) - 8} more" if len(picks) > 8 else ""
@@ -242,6 +247,13 @@ class CommentPoster:
                     f"{sched.get('skipped', 0)} skipped{cache_bit}"
                     + (f", stop={sched.get('stop_reason')}" if sched.get("stop_reason") else "")
                 )
+                if sched.get("avg_complexity") is not None:
+                    lines.append(f"- Avg complexity: `{sched.get('avg_complexity'):.2f}`")
+                if sched.get("escalations"):
+                    lines.append(f"- Escalations: {sched.get('escalations')}")
+                if sched.get("retry_after_sec"):
+                    mins = max(1, int((float(sched["retry_after_sec"]) + 59) // 60))
+                    lines.append(f"- Retry after: ~{mins} minute(s)")
                 health = sched.get("health") or {}
                 if health:
                     parts = [f"{k}={v:.0f}" for k, v in sorted(health.items())]
@@ -249,7 +261,12 @@ class CommentPoster:
                 picks = sched.get("provider_picks") or []
                 if picks:
                     summary = ", ".join(
-                        f"{p.get('provider')}({'ok' if p.get('ok') else 'fail'})"
+                        f"{p.get('provider')}({'ok' if p.get('ok') else 'fail'}"
+                        f"{',esc' if p.get('escalation') else ''}"
+                        f"|{p.get('reason', '?')}"
+                        f"|eff={p.get('effective_tokens', p.get('tokens', '?'))}"
+                        f"{'|mt=' + str(p['max_tokens']) if p.get('max_tokens') is not None else ''}"
+                        f"{'|sc=' + str(p['pick_score']) if p.get('pick_score') is not None else ''})"
                         for p in picks[:8]
                     )
                     more = f" +{len(picks) - 8} more" if len(picks) > 8 else ""

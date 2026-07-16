@@ -78,15 +78,32 @@ class ReviewAggregator:
                 and all(_is_rate_limit_skip(s.reason) for s in skipped)
             )
             if rate_only:
+                retry_mins = None
+                if scheduler_meta is not None:
+                    sched_dict = (
+                        scheduler_meta.to_dict()
+                        if hasattr(scheduler_meta, "to_dict")
+                        else scheduler_meta
+                    )
+                    retry_sec = (sched_dict or {}).get("retry_after_sec")
+                    if retry_sec and float(retry_sec) > 0:
+                        retry_mins = max(1, int((float(retry_sec) + 59) // 60))
+                rec = (
+                    f"Wait ~{retry_mins} minute(s) for RPM quotas to recover, "
+                    "then comment `/sorge` again"
+                    if retry_mins
+                    else "Wait a few minutes for RPM quotas to recover, then comment `/sorge` again"
+                )
+                summary = (
+                    "Review deferred — free-tier provider rate limits were hit before "
+                    "any chunk could be reviewed. This is not a code-quality score."
+                )
+                if retry_mins:
+                    summary += f" Approximate retry window: ~{retry_mins} minute(s)."
                 return ReviewResult(
-                    summary=(
-                        "Review deferred — free-tier provider rate limits were hit before "
-                        "any chunk could be reviewed. This is not a code-quality score."
-                    ),
+                    summary=summary,
                     issues=[],
-                    recommendations=[
-                        "Wait a few minutes for RPM quotas to recover, then comment `/sorge` again",
-                    ],
+                    recommendations=[rec],
                     score=0.0,
                     latency_ms=0.0,
                     model="none",

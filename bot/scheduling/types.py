@@ -51,9 +51,12 @@ class ScheduledChunk:
     attempted_providers: set[str] = field(default_factory=set)
     # After all providers 429, clear attempts and wait once (bounded).
     rate_limit_rounds: int = 0
+    complexity: float = 0.0
+    escalated: bool = False
 
 
 MAX_RATE_LIMIT_ROUNDS = 3
+ESCALATE_SCORE_THRESHOLD = 7.0
 
 
 @dataclass
@@ -71,6 +74,9 @@ class SchedulerMeta:
     skipped: int = 0
     stop_reason: str | None = None
     health_snapshot: dict[str, float] = field(default_factory=dict)
+    escalations: int = 0
+    avg_complexity: float | None = None
+    retry_after_sec: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -81,4 +87,7 @@ class SchedulerMeta:
             "skipped": self.skipped,
             "stop_reason": self.stop_reason,
             "health": self.health_snapshot,
+            "escalations": self.escalations,
+            "avg_complexity": self.avg_complexity,
+            "retry_after_sec": self.retry_after_sec,
         }

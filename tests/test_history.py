@@ -47,39 +47,14 @@ def test_history_cross_run_cooldown(tmp_path: Path):
     assert h2.cooling_remaining("openrouter") > 30
 
 
-def test_history_influences_market_score(tmp_path: Path):
+def test_history_review_score_ema(tmp_path: Path):
     path = tmp_path / "provider_stats.json"
     h = ProviderHistory(path)
-    chunk = _chunk(["src/auth.py"], tokens=1000)
-    # Teach: gemini succeeds, groq fails repeatedly
-    for _ in range(5):
-        h.record("gemini", chunk, ok=True, latency_ms=500)
-        h.record("groq", chunk, ok=False, latency_ms=0)
-
-    scheduled = ScheduledChunk(chunk=chunk, priority=100)
-    groq = ProviderStatus(
-        name="groq",
-        health=90,
-        rpm_remaining=10,
-        max_context_tokens=8000,
-        nominal_latency_ms=200,
-        quality_prior=0.9,
-    )
-    gemini = ProviderStatus(
-        name="gemini",
-        health=90,
-        rpm_remaining=10,
-        max_context_tokens=200000,
-        nominal_latency_ms=1200,
-        quality_prior=0.5,
-    )
-    sg = score_provider(
-        groq, scheduled, historical_quality=h.quality("groq", chunk, default=0.9)
-    )
-    sm = score_provider(
-        gemini, scheduled, historical_quality=h.quality("gemini", chunk, default=0.5)
-    )
-    # Learned success should lift gemini over cold-start-favored groq on history term;
-    # with equal health, latency still favors groq — assert quality values themselves.
-    assert h.quality("gemini", chunk) > h.quality("groq", chunk)
-    assert sm > 0 and sg > 0
+    chunk = _chunk(["src/util.py"], tokens=1000)
+    h.record("groq", chunk, ok=True, latency_ms=100, review_score=6.0, issues_found=3)
+    h.record("groq", chunk, ok=True, latency_ms=120, review_score=8.0, issues_found=2)
+    q = h.quality("groq", chunk, default=0.1)
+    assert q > 0.5
+    h.save()
+    h2 = ProviderHistory(path)
+    assert h2.quality("groq", chunk, default=0.1) > 0.5

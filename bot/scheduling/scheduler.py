@@ -1,4 +1,8 @@
-"""Central review scheduler — providers are backends; no worker-owned fallback."""
+"""Central review scheduler — providers are backends; no worker-owned fallback.
+
+Quality-aware: complexity + security bias primary pick; optional Gemini escalate
+after a successful but low-confidence Groq triage.
+"""
 
 from __future__ import annotations
 
@@ -10,13 +14,24 @@ from loguru import logger
 from bot.file_splitter import ReviewChunk
 from bot.providers.base import Provider
 from bot.quota_tracker import QuotaTracker
+from bot.scheduling.complexity import (
+    complexity_score,
+    is_high_complexity,
+    is_security_sensitive,
+)
 from bot.scheduling.health import HealthTracker
 from bot.scheduling.history import ProviderHistory
-from bot.scheduling.market_score import TEMPLATE_OVERHEAD_TOKENS, score_provider
+from bot.scheduling.market_score import (
+    TEMPLATE_OVERHEAD_TOKENS,
+    effective_tokens,
+    pick_reason,
+    score_provider,
+)
 from bot.scheduling.priority import prioritize_chunk, sort_key
 from bot.scheduling.run_context import ProviderRuntime, RunContext
 from bot.scheduling.token_bucket import TokenBucket
 from bot.scheduling.types import (
+    ESCALATE_SCORE_THRESHOLD,
     MAX_RATE_LIMIT_ROUNDS,
     ProviderResult,
     SchedulerMeta,
@@ -88,18 +103,24 @@ class ReviewScheduler:
         return cls(providers, ctx, max_workers=config.scheduler.max_workers)
 
     def run(self, chunks: list[ReviewChunk]) -> tuple[list[ReviewResult], list[SkipRecord], SchedulerMeta]:
+        overhead = self.ctx.prompt_overhead_tokens
         queue = [
-            ScheduledChunk(chunk=c, priority=prioritize_chunk(c))
+            ScheduledChunk(
+                chunk=c,
+                priority=prioritize_chunk(c),
+                complexity=complexity_score(c, prompt_overhead_tokens=overhead),
+            )
             for c in chunks
             if not c.unreviewable
         ]
         queue.sort(key=sort_key)
+        if queue:
+            self.meta.avg_complexity = sum(s.complexity for s in queue) / len(queue)
 
         results: list[ReviewResult] = []
         skipped: list[SkipRecord] = []
 
         while queue and self.ctx.alive():
-            # Serve cache hits without acquiring provider capacity
             still_waiting: list[ScheduledChunk] = []
             for scheduled in queue:
                 cached = self._try_cache_hit(scheduled)
@@ -107,13 +128,7 @@ class ReviewScheduler:
                     results.append(cached)
                     self.meta.cache_hits += 1
                     self.meta.provider_picks.append(
-                        {
-                            "provider": "cache",
-                            "tokens": scheduled.chunk.estimated_tokens,
-                            "priority": scheduled.priority,
-                            "ok": True,
-                            "status": 200,
-                        }
+                        self._pick_meta(scheduled, "cache", ok=True, status=200, score=None)
                     )
                 else:
                     still_waiting.append(scheduled)
@@ -132,31 +147,37 @@ class ReviewScheduler:
                 if len(batch) >= desired:
                     still_waiting.append(scheduled)
                     continue
-                pick = self._pick_provider(scheduled)
+                pick, pick_score = self._pick_provider_scored(scheduled)
                 if pick is None:
                     still_waiting.append(scheduled)
                     continue
                 if not self.ctx.try_acquire(pick):
                     still_waiting.append(scheduled)
                     continue
+                scheduled._last_pick_score = pick_score  # type: ignore[attr-defined]
                 batch.append((scheduled, pick))
 
             if not batch:
                 wait = self._min_wake_sec()
                 remaining = self.ctx.remaining_sec()
-                # Prefer waiting out cooldowns over skipping when wall-clock remains.
-                # Retry-After / history cool can exceed remaining; still use what we have.
                 if wait is not None and wait > remaining:
                     wait = remaining - 5.0 if remaining >= 15.0 else None
                 if wait is None or wait <= 0:
+                    cool_hint = 0.0
+                    if isinstance(self.ctx.history, ProviderHistory):
+                        cool_hint = self.ctx.history.max_cooling_remaining()
                     for s in still_waiting:
-                        skipped.append(
-                            SkipRecord(
-                                s.chunk,
-                                f"no eligible provider (priority={s.priority}; rate limits / health)",
-                            )
+                        reason = (
+                            f"no eligible provider (priority={s.priority}; "
+                            f"rate limits / health"
                         )
+                        if cool_hint > 0:
+                            mins = max(1, int((cool_hint + 59) // 60))
+                            reason += f"; retry_in_approx_{mins}m"
+                        reason += ")"
+                        skipped.append(SkipRecord(s.chunk, reason))
                     self.meta.stop_reason = "providers_exhausted"
+                    self.meta.retry_after_sec = cool_hint if cool_hint > 0 else None
                     break
                 logger.info(f"Scheduler waiting {wait:.1f}s for provider capacity")
                 time.sleep(min(wait, 15.0))
@@ -182,22 +203,39 @@ class ReviewScheduler:
                     self.ctx.release(name)
                     scheduled.attempted_providers.add(name)
                     self.meta.dispatches += 1
+                    pick_sc = getattr(scheduled, "_last_pick_score", None)
+                    runner = getattr(self.providers.get(name), "_runner", None)
                     self.meta.provider_picks.append(
-                        {
-                            "provider": name,
-                            "tokens": scheduled.chunk.estimated_tokens,
-                            "priority": scheduled.priority,
-                            "ok": outcome.ok,
-                            "status": outcome.status_code,
-                        }
+                        self._pick_meta(
+                            scheduled,
+                            name,
+                            ok=outcome.ok,
+                            status=outcome.status_code,
+                            score=pick_sc,
+                            max_tokens=getattr(runner, "_last_max_tokens", None),
+                        )
                     )
 
                     if outcome.ok and outcome.result:
                         self._record_success(name, outcome.latency_ms)
-                        self._record_history(name, scheduled, ok=True, latency_ms=outcome.latency_ms)
+                        self._record_history(
+                            name,
+                            scheduled,
+                            ok=True,
+                            latency_ms=outcome.latency_ms,
+                            result=outcome.result,
+                        )
                         self.ctx.quota.record(name)
                         self._store_cache(scheduled, outcome.result)
-                        results.append(outcome.result)
+
+                        final = outcome.result
+                        if self._should_escalate(scheduled, name, final):
+                            escalated = self._escalate_to_gemini(scheduled)
+                            if escalated is not None:
+                                final = escalated
+                                scheduled.escalated = True
+                                self.meta.escalations += 1
+                        results.append(final)
                     else:
                         self._record_failure(name, outcome, scheduled)
                         self._record_history(
@@ -213,7 +251,6 @@ class ReviewScheduler:
                             and scheduled.rate_limit_rounds < MAX_RATE_LIMIT_ROUNDS
                             and self.ctx.remaining_sec() > 20
                         ):
-                            # All tried providers 429'd — cool down and retry once.
                             scheduled.rate_limit_rounds += 1
                             scheduled.attempted_providers.clear()
                             logger.info(
@@ -247,12 +284,106 @@ class ReviewScheduler:
                 skipped.append(SkipRecord(s.chunk, f"incomplete (priority={s.priority})"))
 
         self.meta.skipped = len(skipped)
-        self.meta.health_snapshot = {
-            name: rt.health.score for name, rt in self.ctx.providers.items()
-        }
+        self.meta.health_snapshot = self._blended_health_snapshot()
         if isinstance(self.ctx.history, ProviderHistory):
             self.ctx.history.save()
         return results, skipped, self.meta
+
+    def _pick_meta(
+        self,
+        scheduled: ScheduledChunk,
+        provider: str,
+        *,
+        ok: bool,
+        status: int | None,
+        score: float | None,
+        max_tokens: int | None = None,
+    ) -> dict:
+        tokens = effective_tokens(scheduled, self.ctx.prompt_overhead_tokens)
+        reason = pick_reason(
+            provider,
+            tokens,
+            complexity=scheduled.complexity,
+            path_priority=scheduled.priority,
+        )
+        meta: dict = {
+            "provider": provider,
+            "tokens": scheduled.chunk.estimated_tokens,
+            "effective_tokens": tokens,
+            "priority": scheduled.priority,
+            "complexity": round(scheduled.complexity, 3),
+            "reason": reason,
+            "ok": ok,
+            "status": status,
+        }
+        if score is not None:
+            meta["pick_score"] = round(score, 4)
+        if max_tokens is not None:
+            meta["max_tokens"] = max_tokens
+        return meta
+
+    def _should_escalate(
+        self,
+        scheduled: ScheduledChunk,
+        provider: str,
+        result: ReviewResult,
+    ) -> bool:
+        if provider != "groq":
+            return False
+        if "gemini" not in self.providers:
+            return False
+        if not self.ctx.quota.can_use("gemini"):
+            return False
+        if isinstance(self.ctx.history, ProviderHistory) and self.ctx.history.is_cooling("gemini"):
+            return False
+        if is_security_sensitive(scheduled.chunk):
+            return True
+        if is_high_complexity(scheduled.complexity):
+            return True
+        if result.score < ESCALATE_SCORE_THRESHOLD:
+            return True
+        if scheduled.chunk.estimated_tokens >= 2500 and not result.issues:
+            return True
+        return False
+
+    def _escalate_to_gemini(self, scheduled: ScheduledChunk) -> ReviewResult | None:
+        if "gemini" not in self.providers:
+            return None
+        if not self.ctx.try_acquire("gemini"):
+            return None
+        try:
+            logger.info(
+                f"Escalating chunk to gemini "
+                f"(complexity={scheduled.complexity:.2f}, priority={scheduled.priority})"
+            )
+            outcome = self._dispatch(scheduled, "gemini")
+            self.meta.dispatches += 1
+            meta = self._pick_meta(
+                scheduled,
+                "gemini",
+                ok=outcome.ok,
+                status=outcome.status_code,
+                score=None,
+            )
+            meta["escalation"] = True
+            self.meta.provider_picks.append(meta)
+            if outcome.ok and outcome.result:
+                self._record_success("gemini", outcome.latency_ms)
+                self._record_history(
+                    "gemini",
+                    scheduled,
+                    ok=True,
+                    latency_ms=outcome.latency_ms,
+                    result=outcome.result,
+                )
+                self.ctx.quota.record("gemini")
+                self._store_cache(scheduled, outcome.result)
+                return outcome.result
+            self._record_failure("gemini", outcome, scheduled)
+            self._record_history("gemini", scheduled, ok=False, latency_ms=outcome.latency_ms)
+            return None
+        finally:
+            self.ctx.release("gemini")
 
     def _try_cache_hit(self, scheduled: ScheduledChunk) -> ReviewResult | None:
         if not self.ctx.cache_enabled:
@@ -281,7 +412,6 @@ class ReviewScheduler:
         )
 
     def _desired_workers(self) -> int:
-        """Adaptive concurrency: sum of free inflight slots on healthy providers."""
         slots = 0
         for name, rt in self.ctx.providers.items():
             if rt.health.is_cooling():
@@ -299,6 +429,10 @@ class ReviewScheduler:
         return max(1, min(self.max_workers, slots))
 
     def _pick_provider(self, scheduled: ScheduledChunk) -> str | None:
+        name, _ = self._pick_provider_scored(scheduled)
+        return name
+
+    def _pick_provider_scored(self, scheduled: ScheduledChunk) -> tuple[str | None, float]:
         best_name: str | None = None
         best_score = 0.0
         for name, provider in self.providers.items():
@@ -326,35 +460,37 @@ class ReviewScheduler:
                     scheduled.chunk,
                     default=status.quality_prior,
                 )
+            key = self.ctx.quota.PROVIDER_KEYS.get(name, name)
+            limit = max(1, self.ctx.quota.limits.get(key, 1))
+            quota_frac = self.ctx.quota.remaining(name) / limit
+            blended_hist = 0.85 * hist_q + 0.15 * max(0.0, min(1.0, quota_frac))
             sc = score_provider(
                 status,
                 scheduled,
-                historical_quality=hist_q,
+                historical_quality=blended_hist,
                 prompt_overhead_tokens=self.ctx.prompt_overhead_tokens,
             )
             if sc > best_score:
                 best_score = sc
                 best_name = name
-        return best_name if best_score > 0 else None
+        return (best_name, best_score) if best_score > 0 else (None, 0.0)
 
     def _has_untried_eligible(self, scheduled: ScheduledChunk) -> bool:
         probe = ScheduledChunk(
             chunk=scheduled.chunk,
             priority=scheduled.priority,
+            complexity=scheduled.complexity,
             attempted_providers=set(scheduled.attempted_providers),
         )
         return self._pick_provider(probe) is not None
 
     def _min_wake_sec(self) -> float | None:
-        """Soonest capacity wake: cooling end, health recovery, or bucket refill."""
         waits: list[float] = []
         threshold = self.ctx.health_threshold
         for name, rt in self.ctx.providers.items():
             cool = rt.health.cooling_remaining()
             if cool > 0:
                 waits.append(cool)
-            # After 429 penalties, score can sit below threshold with no cool timer.
-            # Wait for natural recovery instead of skipping as "providers_exhausted".
             if rt.health.score < threshold:
                 recover = rt.health.seconds_until_score(threshold)
                 if recover > 0:
@@ -371,9 +507,11 @@ class ReviewScheduler:
 
     def _dispatch(self, scheduled: ScheduledChunk, name: str) -> ProviderResult:
         provider = self.providers[name]
+        eff = effective_tokens(scheduled, self.ctx.prompt_overhead_tokens)
         logger.info(
             f"Scheduler → {name} for chunk "
-            f"(priority={scheduled.priority}, tokens={scheduled.chunk.estimated_tokens})"
+            f"(priority={scheduled.priority}, complexity={scheduled.complexity:.2f}, "
+            f"tokens={scheduled.chunk.estimated_tokens}, effective={eff})"
         )
         return provider.review(scheduled.chunk, self.ctx)
 
@@ -388,6 +526,7 @@ class ReviewScheduler:
         *,
         ok: bool,
         latency_ms: float,
+        result: ReviewResult | None = None,
     ) -> None:
         if isinstance(self.ctx.history, ProviderHistory):
             self.ctx.history.record(
@@ -395,7 +534,28 @@ class ReviewScheduler:
                 scheduled.chunk,
                 ok=ok,
                 latency_ms=latency_ms,
+                review_score=result.score if result and ok else None,
+                issues_found=len(result.issues) if result and ok else None,
             )
+
+    def _blended_health_snapshot(self) -> dict[str, float]:
+        out: dict[str, float] = {}
+        for name, rt in self.ctx.providers.items():
+            success_n = max(0.0, min(1.0, rt.health.score / 100.0))
+            lat_n = max(0.0, min(1.0, 1.0 - (rt.nominal_latency_ms / 2500.0)))
+            key = self.ctx.quota.PROVIDER_KEYS.get(name, name)
+            limit = max(1, self.ctx.quota.limits.get(key, 1))
+            rem = self.ctx.quota.remaining(name)
+            quota_n = rem / limit
+            fail_pen = 0.5 if rt.health.is_cooling() else 0.0
+            blended = (
+                0.40 * success_n
+                + 0.30 * lat_n
+                + 0.20 * quota_n
+                + 0.10 * (1.0 - fail_pen)
+            ) * 100.0
+            out[name] = round(blended, 1)
+        return out
 
     def _record_failure(
         self,
@@ -413,7 +573,6 @@ class ReviewScheduler:
                 self.ctx.history.mark_rate_limited(name, retry_after=outcome.retry_after)
         elif outcome.is_payload_too_large:
             rt.health.record_payload_too_large()
-            # Shrink effective window so market score skips this provider for similar chunks
             if scheduled is not None:
                 needed = scheduled.chunk.estimated_tokens + self.ctx.prompt_overhead_tokens
                 new_cap = max(1, needed - 1)
