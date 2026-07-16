@@ -337,6 +337,56 @@ class TestGroqRunner:
 
         assert result is None
 
+    def test_uses_8192_max_tokens_by_default(self, sample_diff):
+        runner = GroqRunner(api_key="fake-groq-key")
+        captured: list[dict] = []
+
+        def _capture_post(*args, **kwargs):
+            captured.append(kwargs.get("json") or {})
+            return _mock_response(OPENAI_COMPAT_CHAT_COMPLETIONS_RESPONSE)
+
+        with patch("bot.runners.groq_runner.post_with_retry", side_effect=_capture_post):
+            runner._run_review(sample_diff)
+
+        assert captured
+        assert captured[0]["max_tokens"] == GroqRunner.DEFAULT_MAX_TOKENS
+
+    def test_retries_with_higher_max_tokens_when_truncated_and_unparsed(self, sample_diff):
+        runner = GroqRunner(api_key="fake-groq-key")
+        truncated = {
+            "choices": [
+                {
+                    "message": {"content": "not json at all"},
+                    "finish_reason": "length",
+                }
+            ],
+            "usage": {"total_tokens": 2048},
+        }
+        ok = {
+            **OPENAI_COMPAT_CHAT_COMPLETIONS_RESPONSE,
+            "choices": [
+                {
+                    **OPENAI_COMPAT_CHAT_COMPLETIONS_RESPONSE["choices"][0],
+                    "finish_reason": "stop",
+                }
+            ],
+        }
+        captured: list[int] = []
+
+        def _side_effect(*args, **kwargs):
+            payload = kwargs.get("json") or {}
+            captured.append(payload["max_tokens"])
+            data = truncated if len(captured) == 1 else ok
+            return _mock_response(data)
+
+        with patch("bot.runners.groq_runner.post_with_retry", side_effect=_side_effect):
+            result = runner._run_review(sample_diff)
+
+        assert captured == [8192, 16384]
+        assert result is not None
+        assert result.parse_warning is None
+        assert result.review_type == "groq"
+
 
 # ---------------------------------------------------------------------------
 # SchemaEncoder

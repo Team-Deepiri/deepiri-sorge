@@ -20,6 +20,9 @@ class GroqRunner(BaseRunner):
 
     DEFAULT_MODEL = "openai/gpt-oss-120b"
     DEFAULT_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
+    # 2048 was truncating mid-JSON on mid-size PRs (emotion#81) → parse_warning → failover.
+    DEFAULT_MAX_TOKENS = 8192
+    RETRY_MAX_TOKENS = 16384
 
     def __init__(
         self,
@@ -66,6 +69,21 @@ class GroqRunner(BaseRunner):
             return None
 
     def _call_api(self, diff: ParsedDiff, start_time: float) -> ReviewResult:
+        result, truncated = self._complete(diff, start_time, self.DEFAULT_MAX_TOKENS)
+        if truncated and result.parse_warning:
+            logger.warning(
+                f"Groq truncated at {self.DEFAULT_MAX_TOKENS} tokens with parse_warning; "
+                f"retrying once with max_tokens={self.RETRY_MAX_TOKENS}"
+            )
+            result, _ = self._complete(diff, start_time, self.RETRY_MAX_TOKENS)
+        return result
+
+    def _complete(
+        self,
+        diff: ParsedDiff,
+        start_time: float,
+        max_tokens: int,
+    ) -> tuple[ReviewResult, bool]:
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.api_key}",
@@ -79,16 +97,17 @@ class GroqRunner(BaseRunner):
                     "role": "system",
                     "content": (
                         "You are a code review bot. Respond with a single raw JSON object only. "
-                        "No markdown fences, no prose before or after the JSON."
+                        "No markdown fences, no prose before or after the JSON. "
+                        "Keep the summary concise; prefer fewer, higher-signal issues."
                     ),
                 },
                 {"role": "user", "content": self._build_prompt(diff)},
             ],
             "temperature": 0.2,
-            "max_tokens": 2048,
+            "max_tokens": max_tokens,
         }
 
-        logger.debug(f"Calling Groq with model: {self.model}")
+        logger.debug(f"Calling Groq with model: {self.model} (max_tokens={max_tokens})")
 
         response = post_with_retry(
             self.endpoint, json=payload, headers=headers, timeout=120, max_retries=1
@@ -99,18 +118,19 @@ class GroqRunner(BaseRunner):
         choice = data.get("choices", [{}])[0]
         content = choice.get("message", {}).get("content", "")
         self._last_raw_response = content  # store for salvage on parse failure
-        if choice.get("finish_reason") == "length":
+        truncated = choice.get("finish_reason") == "length"
+        if truncated:
             logger.warning("Groq response truncated (finish_reason=length)")
         tokens_used = data.get("usage", {}).get("total_tokens")
 
         parsed = self._parse_response(content)
-
-        return self._build_result(
+        result = self._build_result(
             parsed,
             latency_ms=latency_ms,
             tokens_used=tokens_used,
             review_type="groq",
         )
+        return result, truncated
 
     def _timeout_result(self, start_time: float) -> ReviewResult:
         return ReviewResult(
