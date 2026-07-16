@@ -196,6 +196,15 @@ jobs:
       - name: Install dependencies
         run: poetry install --no-interaction --no-ansi
 
+      - name: Jitter start (desync concurrent /sorge bursts)
+        if: steps.inputs.outputs.MODE == 'review'
+        run: |
+          # Spread simultaneous repository_dispatch jobs across 0–3s so free-tier
+          # RPM bursts don't all hit Groq/Gemini/OpenRouter in the same millisecond.
+          DELAY_MS=$((RANDOM % 3000))
+          echo "Dispatch jitter: sleeping ${DELAY_MS}ms"
+          python3 -c "import time; time.sleep(${DELAY_MS}/1000.0)"
+
       - name: Run AI review
         if: steps.inputs.outputs.MODE == 'review'
         env:

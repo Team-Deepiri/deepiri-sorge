@@ -84,15 +84,57 @@ def _stat_key(provider: str, bucket: str, lang: str) -> str:
 
 
 class ProviderHistory:
-    """Thread-safe EMA success/latency/review-score store with JSON persistence."""
+    """Thread-safe EMA success/latency/review-score store with JSON persistence.
 
-    def __init__(self, path: Path | None = None, *, alpha: float = EMA_ALPHA):
+    Cooldowns are also max-merged through Worker KV when SORGE_LEDGER_* is set,
+    so concurrent Actions runs see each other's 429s instead of stampeding.
+    """
+
+    def __init__(
+        self,
+        path: Path | None = None,
+        *,
+        alpha: float = EMA_ALPHA,
+        sync_remote: bool = True,
+    ):
         self.path = path or DEFAULT_PATH
         self.alpha = alpha
+        self.sync_remote = sync_remote
         self._lock = threading.Lock()
         self._stats: dict[str, dict] = {}
         self._cooldowns: dict[str, float] = {}  # provider -> unix ts until
         self.load()
+        if sync_remote:
+            self._pull_remote_cooldowns()
+
+    def _pull_remote_cooldowns(self) -> None:
+        try:
+            from bot.escalate_ledger import EscalateLedger
+
+            remote = EscalateLedger().fetch_provider_cooldowns()
+            if not remote:
+                return
+            now = time.time()
+            with self._lock:
+                for name, until in remote.items():
+                    if until <= now:
+                        continue
+                    prev = self._cooldowns.get(name, 0.0)
+                    self._cooldowns[name] = max(prev, until)
+        except Exception as e:
+            logger.debug(f"Provider cooldown remote pull skipped: {e}")
+
+    def _push_remote_cooldowns(self) -> None:
+        if not self.sync_remote:
+            return
+        try:
+            from bot.escalate_ledger import EscalateLedger
+
+            with self._lock:
+                cool = dict(self._cooldowns)
+            EscalateLedger().push_provider_cooldowns(cool)
+        except Exception as e:
+            logger.debug(f"Provider cooldown remote push skipped: {e}")
 
     def load(self) -> None:
         with self._lock:
@@ -130,6 +172,7 @@ class ProviderHistory:
                 self.path.write_text(json.dumps(payload, indent=2, sort_keys=True))
             except Exception as exc:
                 logger.warning(f"provider history save failed: {exc}")
+        self._push_remote_cooldowns()
 
     def mark_rate_limited(
         self,
@@ -144,6 +187,7 @@ class ProviderHistory:
             prev = self._cooldowns.get(provider, 0.0)
             self._cooldowns[provider] = max(prev, until)
         logger.info(f"Provider history: {provider} cooled for {wait:.0f}s (cross-run)")
+        self._push_remote_cooldowns()
 
     def cooling_remaining(self, provider: str) -> float:
         with self._lock:
