@@ -69,10 +69,42 @@ def test_market_score_overhead_excludes_tight_provider():
         estimated_tokens=5339,
     )
     scheduled = ScheduledChunk(chunk=chunk)
-    # Without overhead: fits
     assert score_provider(status, scheduled, prompt_overhead_tokens=0) > 0
-    # With template+context overhead: over 8k → 0
     assert score_provider(status, scheduled, prompt_overhead_tokens=3000) == 0.0
+
+
+def test_lane_affinity_prefers_groq_when_it_fits():
+    """Small effective prompts must rank Groq above OpenRouter (stop OR pecking)."""
+    from bot.scheduling.market_score import score_provider as score
+
+    chunk = ReviewChunk(
+        files=["src/a.py"],
+        parsed_diff=ParsedDiff(raw="+x\n"),
+        estimated_tokens=1000,
+    )
+    scheduled = ScheduledChunk(chunk=chunk, priority=80)
+    overhead = 2000  # effective 3000 < groq lane
+    groq = ProviderStatus(
+        name="groq",
+        health=100,
+        rpm_remaining=10,
+        max_context_tokens=4500,
+        nominal_latency_ms=400,
+        quality_prior=0.9,
+    )
+    openrouter = ProviderStatus(
+        name="openrouter",
+        health=100,
+        rpm_remaining=10,
+        max_context_tokens=100000,
+        nominal_latency_ms=800,
+        quality_prior=0.95,  # even with better prior, lane should win
+    )
+    sg = score(groq, scheduled, prompt_overhead_tokens=overhead, historical_quality=0.5)
+    so = score(
+        openrouter, scheduled, prompt_overhead_tokens=overhead, historical_quality=0.95
+    )
+    assert sg > so
 
 
 def _ok_result(summary="ok") -> ReviewResult:

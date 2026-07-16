@@ -79,7 +79,13 @@ class GeminiRunner(BaseRunner):
 
         logger.debug(f"Calling Gemini with model: {self.model}")
 
-        response = post_with_retry(url, json=payload, headers={"Content-Type": "application/json"}, timeout=180)
+        response = post_with_retry(
+            url,
+            json=payload,
+            headers={"Content-Type": "application/json"},
+            timeout=180,
+            max_retries=1,
+        )
         latency_ms = (time.time() - start_time) * 1000
 
         data = response.json()

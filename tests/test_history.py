@@ -37,6 +37,16 @@ def test_history_persist_reload(tmp_path: Path):
     assert q > 0.5
 
 
+def test_history_cross_run_cooldown(tmp_path: Path):
+    path = tmp_path / "provider_stats.json"
+    h = ProviderHistory(path)
+    h.mark_rate_limited("openrouter", retry_after=60)
+    h.save()
+    h2 = ProviderHistory(path)
+    assert h2.is_cooling("openrouter")
+    assert h2.cooling_remaining("openrouter") > 30
+
+
 def test_history_influences_market_score(tmp_path: Path):
     path = tmp_path / "provider_stats.json"
     h = ProviderHistory(path)
