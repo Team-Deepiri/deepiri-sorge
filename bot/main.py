@@ -19,6 +19,7 @@ from bot.providers import build_providers
 from bot.quota_tracker import QuotaTracker
 from bot.repo_context import RepoContextWeaver
 from bot.review_aggregator import ReviewAggregator
+from bot.scheduling.market_score import TEMPLATE_OVERHEAD_TOKENS
 from bot.scheduling.scheduler import ReviewScheduler
 from bot.schemas import ReviewResult as ReviewResultSchema
 from bot.symbol_index import SymbolIndexer, format_symbol_index
@@ -125,6 +126,7 @@ def run_auto_review(
         config,
         repo_context=repo_context,
         context_fingerprint=context_fingerprint,
+        prompt_overhead_tokens=TEMPLATE_OVERHEAD_TOKENS + max(0, extra_chars // 4),
     )
     logger.info(
         f"Scheduler starting: {len(runnable)} chunk(s), "
@@ -179,7 +181,13 @@ def main() -> None:
 
     engine = DecisionEngine(config)
     decision = engine.decide(parsed_diff)
-    logger.info(f"Decision: {decision.action.value} - {decision.reason}")
+    if args.mode == "auto":
+        logger.info(
+            f"Filter decision: {decision.action.value} - {decision.reason} "
+            "(auto mode: ReviewScheduler selects providers)"
+        )
+    else:
+        logger.info(f"Decision: {decision.action.value} - {decision.reason}")
 
     if decision.action == Action.SKIP and args.mode == "auto" and not args.force:
         logger.info("Skipping review")
@@ -275,11 +283,17 @@ def main() -> None:
         sys.exit(2)
 
     if review_result and config.claim_verifier.enabled:
+        before = len(review_result.issues)
         review_result = ClaimVerifier().verify_result(
             review_result,
             repo_root=repo_root,
             changed_paths=parsed_diff.files,
             indexes=symbol_indexes or None,
+        )
+        suppressed = before - len(review_result.issues)
+        logger.info(
+            f"ClaimVerifier: {before} issues in → {len(review_result.issues)} out "
+            f"({suppressed} suppressed)"
         )
 
     if args.pr_number and args.repo and not args.dry_run:

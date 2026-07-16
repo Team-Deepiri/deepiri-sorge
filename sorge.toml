@@ -72,7 +72,8 @@ partial_on_exhausted = true
 [providers.groq]
 rpm = 30
 max_inflight = 1
-max_context_tokens = 8000
+# Conservative: free-tier window is ~8k including template + repo context overhead
+max_context_tokens = 4500
 quality_prior = 0.9
 nominal_latency_ms = 400
 

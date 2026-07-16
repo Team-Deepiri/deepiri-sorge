@@ -36,6 +36,8 @@ class RunContext:
     cache_enabled: bool = False
     cache_ttl_hours: int = 24
     history: object | None = None  # ProviderHistory; typed loosely to avoid cycles
+    # Diff-token estimate ignores template + repo context; add this for eligibility.
+    prompt_overhead_tokens: int = 0
 
     def alive(self) -> bool:
         return time.monotonic() < self.deadline
