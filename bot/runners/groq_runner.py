@@ -20,9 +20,12 @@ class GroqRunner(BaseRunner):
 
     DEFAULT_MODEL = "openai/gpt-oss-120b"
     DEFAULT_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
-    # 2048 was truncating mid-JSON on mid-size PRs (emotion#81) → parse_warning → failover.
-    DEFAULT_MAX_TOKENS = 8192
-    RETRY_MAX_TOKENS = 16384
+    # Groq free tier validates input + max_tokens against ~8k total context.
+    CONTEXT_TOKEN_LIMIT = 8192
+    CONTEXT_SAFETY_BUFFER = 192
+    MIN_OUTPUT_TOKENS = 1536
+    DESIRED_MAX_TOKENS = 4096
+    RETRY_MAX_TOKENS = 6144
 
     def __init__(
         self,
@@ -38,6 +41,20 @@ class GroqRunner(BaseRunner):
         self._last_http_status: int | None = None
         self._last_retry_after: float | None = None
         self._last_timed_out: bool = False
+
+    @staticmethod
+    def _estimate_message_tokens(messages: list[dict[str, str]]) -> int:
+        chars = sum(len(m.get("content") or "") for m in messages)
+        return max(1, chars // 4)
+
+    @classmethod
+    def _cap_max_tokens(cls, messages: list[dict[str, str]], desired: int) -> int:
+        """Cap output budget so input + max_tokens stays within Groq context."""
+        est_input = cls._estimate_message_tokens(messages)
+        headroom = cls.CONTEXT_TOKEN_LIMIT - est_input - cls.CONTEXT_SAFETY_BUFFER
+        if headroom < cls.MIN_OUTPUT_TOKENS:
+            return max(256, headroom)
+        return max(cls.MIN_OUTPUT_TOKENS, min(desired, headroom))
 
     def _run_review(self, diff: ParsedDiff) -> ReviewResult | None:
         if not self.api_key:
@@ -68,19 +85,36 @@ class GroqRunner(BaseRunner):
                         self._last_retry_after = None
             return None
 
+    def _build_messages(self, diff: ParsedDiff) -> list[dict[str, str]]:
+        return [
+            {
+                "role": "system",
+                "content": (
+                    "You are a code review bot. Respond with a single raw JSON object only. "
+                    "No markdown fences, no prose before or after the JSON. "
+                    "Keep the summary concise; prefer fewer, higher-signal issues."
+                ),
+            },
+            {"role": "user", "content": self._build_prompt(diff)},
+        ]
+
     def _call_api(self, diff: ParsedDiff, start_time: float) -> ReviewResult:
-        result, truncated = self._complete(diff, start_time, self.DEFAULT_MAX_TOKENS)
+        messages = self._build_messages(diff)
+        first_cap = self._cap_max_tokens(messages, self.DESIRED_MAX_TOKENS)
+        result, truncated = self._complete(messages, start_time, first_cap)
         if truncated and result.parse_warning:
-            logger.warning(
-                f"Groq truncated at {self.DEFAULT_MAX_TOKENS} tokens with parse_warning; "
-                f"retrying once with max_tokens={self.RETRY_MAX_TOKENS}"
-            )
-            result, _ = self._complete(diff, start_time, self.RETRY_MAX_TOKENS)
+            retry_cap = self._cap_max_tokens(messages, self.RETRY_MAX_TOKENS)
+            if retry_cap > first_cap:
+                logger.warning(
+                    f"Groq truncated at max_tokens={first_cap} with parse_warning; "
+                    f"retrying once with max_tokens={retry_cap}"
+                )
+                result, _ = self._complete(messages, start_time, retry_cap)
         return result
 
     def _complete(
         self,
-        diff: ParsedDiff,
+        messages: list[dict[str, str]],
         start_time: float,
         max_tokens: int,
     ) -> tuple[ReviewResult, bool]:
@@ -89,20 +123,9 @@ class GroqRunner(BaseRunner):
             "Authorization": f"Bearer {self.api_key}",
         }
 
-        # Prompt already requires raw JSON — skip response_format (often rejected).
         payload = {
             "model": self.model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a code review bot. Respond with a single raw JSON object only. "
-                        "No markdown fences, no prose before or after the JSON. "
-                        "Keep the summary concise; prefer fewer, higher-signal issues."
-                    ),
-                },
-                {"role": "user", "content": self._build_prompt(diff)},
-            ],
+            "messages": messages,
             "temperature": 0.2,
             "max_tokens": max_tokens,
         }
@@ -117,7 +140,7 @@ class GroqRunner(BaseRunner):
         data = response.json()
         choice = data.get("choices", [{}])[0]
         content = choice.get("message", {}).get("content", "")
-        self._last_raw_response = content  # store for salvage on parse failure
+        self._last_raw_response = content
         truncated = choice.get("finish_reason") == "length"
         if truncated:
             logger.warning("Groq response truncated (finish_reason=length)")
