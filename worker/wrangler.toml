@@ -2,11 +2,9 @@ name = "sorge-webhook"
 main = "src/index.js"
 compatibility_date = "2024-01-01"
 
-# Create KV then uncomment / set real id:
-#   npx wrangler kv namespace create SORGE_LEDGER
-# [[kv_namespaces]]
-# binding = "SORGE_LEDGER"
-# id = "REPLACE_ME"
+[[kv_namespaces]]
+binding = "SORGE_LEDGER"
+id = "ec099ecb082d43b89920480c806efe95"
 
 [triggers]
 crons = ["20 * * * *"]
