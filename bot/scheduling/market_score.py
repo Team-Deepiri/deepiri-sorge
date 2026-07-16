@@ -13,6 +13,14 @@ DEFAULT_WEIGHTS = {
     "history": 0.05,
 }
 
+# Review template + JSON schema instructions roughly consume this many tokens.
+TEMPLATE_OVERHEAD_TOKENS = 2500
+
+
+def effective_tokens(scheduled: ScheduledChunk, prompt_overhead_tokens: int = 0) -> int:
+    """Diff estimate + prompt/context overhead (what the provider actually receives)."""
+    return max(0, scheduled.chunk.estimated_tokens) + max(0, prompt_overhead_tokens)
+
 
 def context_fit(status: ProviderStatus, tokens: int) -> float:
     if tokens <= 0:
@@ -34,10 +42,11 @@ def score_provider(
     scheduled: ScheduledChunk,
     *,
     historical_quality: float = 0.5,
+    prompt_overhead_tokens: int = 0,
     weights: dict[str, float] | None = None,
 ) -> float:
     w = weights or DEFAULT_WEIGHTS
-    tokens = scheduled.chunk.estimated_tokens
+    tokens = effective_tokens(scheduled, prompt_overhead_tokens)
     fit = context_fit(status, tokens)
     if fit <= 0.0:
         return 0.0

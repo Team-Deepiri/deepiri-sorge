@@ -12,7 +12,7 @@ from bot.providers.base import Provider
 from bot.quota_tracker import QuotaTracker
 from bot.scheduling.health import HealthTracker
 from bot.scheduling.history import ProviderHistory
-from bot.scheduling.market_score import score_provider
+from bot.scheduling.market_score import TEMPLATE_OVERHEAD_TOKENS, score_provider
 from bot.scheduling.priority import prioritize_chunk, sort_key
 from bot.scheduling.run_context import ProviderRuntime, RunContext
 from bot.scheduling.token_bucket import TokenBucket
@@ -48,6 +48,7 @@ class ReviewScheduler:
         *,
         repo_context: str | None = None,
         context_fingerprint: str = "",
+        prompt_overhead_tokens: int = 0,
     ) -> "ReviewScheduler":
         deadline = time.monotonic() + float(config.scheduler.wall_clock_sec)
         runtimes: dict[str, ProviderRuntime] = {}
@@ -64,6 +65,9 @@ class ReviewScheduler:
             )
         cache_cfg = getattr(config, "cache", None)
         history = ProviderHistory()
+        overhead = max(0, int(prompt_overhead_tokens))
+        if overhead <= 0:
+            overhead = TEMPLATE_OVERHEAD_TOKENS
         ctx = RunContext(
             providers=runtimes,
             quota=quota,
@@ -74,6 +78,11 @@ class ReviewScheduler:
             cache_enabled=bool(cache_cfg and cache_cfg.enabled),
             cache_ttl_hours=int(cache_cfg.ttl_hours) if cache_cfg else 24,
             history=history,
+            prompt_overhead_tokens=overhead,
+        )
+        logger.info(
+            f"Provider history loaded ({len(getattr(history, '_stats', {}))} keys); "
+            f"prompt_overhead_tokens={overhead}"
         )
         return cls(providers, ctx, max_workers=config.scheduler.max_workers)
 
@@ -184,7 +193,7 @@ class ReviewScheduler:
                         self._store_cache(scheduled, outcome.result)
                         results.append(outcome.result)
                     else:
-                        self._record_failure(name, outcome)
+                        self._record_failure(name, outcome, scheduled)
                         self._record_history(
                             name,
                             scheduled,
@@ -299,6 +308,7 @@ class ReviewScheduler:
                 status,
                 scheduled,
                 historical_quality=hist_q,
+                prompt_overhead_tokens=self.ctx.prompt_overhead_tokens,
             )
             if sc > best_score:
                 best_score = sc
@@ -354,7 +364,12 @@ class ReviewScheduler:
                 latency_ms=latency_ms,
             )
 
-    def _record_failure(self, name: str, outcome: ProviderResult) -> None:
+    def _record_failure(
+        self,
+        name: str,
+        outcome: ProviderResult,
+        scheduled: ScheduledChunk | None = None,
+    ) -> None:
         rt = self.ctx.providers[name]
         if outcome.timed_out:
             rt.health.record_timeout()
@@ -363,6 +378,16 @@ class ReviewScheduler:
             self.ctx.quota.record_failure(name)
         elif outcome.is_payload_too_large:
             rt.health.record_payload_too_large()
+            # Shrink effective window so market score skips this provider for similar chunks
+            if scheduled is not None:
+                needed = scheduled.chunk.estimated_tokens + self.ctx.prompt_overhead_tokens
+                new_cap = max(1, needed - 1)
+                if new_cap < rt.max_context_tokens:
+                    logger.info(
+                        f"Provider {name}: 413 → max_context_tokens "
+                        f"{rt.max_context_tokens} → {new_cap}"
+                    )
+                    rt.max_context_tokens = new_cap
         elif outcome.status_code and outcome.status_code >= 500:
             rt.health.record_server_error()
         else:

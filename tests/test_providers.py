@@ -67,3 +67,16 @@ def test_adapter_ok_result():
     out = run_runner_review(provider_name="groq", runner=runner, chunk=_chunk(), run=MagicMock())
     assert out.ok
     assert out.result is not None
+
+
+def test_adapter_surfaces_swallowed_http_status():
+    """Runners that catch HTTPError and return None still expose _last_http_status."""
+    runner = MagicMock()
+    runner.review.return_value = None
+    runner._last_http_status = 413
+    runner._last_retry_after = None
+    runner._last_timed_out = False
+    out = run_runner_review(provider_name="groq", runner=runner, chunk=_chunk(), run=MagicMock())
+    assert out.ok is False
+    assert out.status_code == 413
+    assert out.is_payload_too_large

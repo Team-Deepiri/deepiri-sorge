@@ -35,6 +35,20 @@ def run_runner_review(
                 latency_ms=latency,
                 result=result,
             )
+        # Runners often swallow HTTP errors and return None while stashing status
+        # on the runner — surface that so the scheduler can act on 413/429.
+        last_status = getattr(runner, "_last_http_status", None)
+        last_retry = getattr(runner, "_last_retry_after", None)
+        if result is None and last_status is not None:
+            return ProviderResult(
+                ok=False,
+                provider=provider_name,
+                status_code=last_status,
+                retry_after=last_retry,
+                latency_ms=latency,
+                error=f"http_{last_status}",
+                timed_out=bool(getattr(runner, "_last_timed_out", False)),
+            )
         return ProviderResult(
             ok=False,
             provider=provider_name,

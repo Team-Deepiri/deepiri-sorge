@@ -53,6 +53,28 @@ def test_market_score_rejects_oversized_context():
     assert score_provider(status, scheduled) == 0.0
 
 
+def test_market_score_overhead_excludes_tight_provider():
+    """Diff fits window but prompt overhead must exclude the provider (prod 413 case)."""
+    status = ProviderStatus(
+        name="groq",
+        health=100,
+        rpm_remaining=10,
+        max_context_tokens=8000,
+        nominal_latency_ms=200,
+        quality_prior=0.9,
+    )
+    chunk = ReviewChunk(
+        files=["a.py"],
+        parsed_diff=ParsedDiff(raw="+x\n"),
+        estimated_tokens=5339,
+    )
+    scheduled = ScheduledChunk(chunk=chunk)
+    # Without overhead: fits
+    assert score_provider(status, scheduled, prompt_overhead_tokens=0) > 0
+    # With template+context overhead: over 8k → 0
+    assert score_provider(status, scheduled, prompt_overhead_tokens=3000) == 0.0
+
+
 def _ok_result(summary="ok") -> ReviewResult:
     return ReviewResult(
         summary=summary,
