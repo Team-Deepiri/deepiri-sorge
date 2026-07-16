@@ -249,7 +249,7 @@ def main() -> None:
         if not review_result:
             logger.critical("All providers exhausted — review failed")
             if not args.dry_run and github_token and args.repo and args.pr_number:
-                CommentPoster(github_token).post_comment(
+                CommentPoster(github_token).upsert_comment(
                     args.repo,
                     args.pr_number,
                     "## Sorge AI Code Review\n\n"
@@ -278,7 +278,7 @@ def main() -> None:
         if not review_result:
             logger.critical(f"Review failed: no result from {args.mode}")
             if not args.dry_run and github_token and args.repo and args.pr_number:
-                CommentPoster(github_token).post_comment(
+                CommentPoster(github_token).upsert_comment(
                     args.repo,
                     args.pr_number,
                     f"## Sorge AI Code Review\n\n"

@@ -123,3 +123,34 @@ class TestCommentPosterFormatting:
         assert "needs redesign" not in body
         assert "/sorge" in body
         assert "not a code review result" in body
+
+    def test_post_review_upserts_by_default(self, monkeypatch):
+        poster = CommentPoster("token")
+        calls: list[tuple] = []
+
+        def fake_upsert(repo, pr, body, *, preferred_comment_id=None):
+            calls.append(("upsert", repo, pr, preferred_comment_id))
+            return 99
+
+        def fake_post(repo, pr, body, commit_id=None):
+            calls.append(("post", repo, pr))
+            return 100
+
+        monkeypatch.setattr(poster, "upsert_comment", fake_upsert)
+        monkeypatch.setattr(poster, "post_comment", fake_post)
+
+        review = ReviewResult(
+            summary="ok",
+            issues=[],
+            recommendations=[],
+            score=8.0,
+            model="m",
+            latency_ms=1.0,
+            review_type="groq",
+        )
+        assert poster.post_review("org/r", 7, review) == 99
+        assert calls == [("upsert", "org/r", 7, None)]
+
+        calls.clear()
+        assert poster.post_review("org/r", 7, review, edit_existing=False) == 100
+        assert calls == [("post", "org/r", 7)]
