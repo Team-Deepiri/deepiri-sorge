@@ -105,6 +105,7 @@ def run_drain(
             ticket.pr_number,
             result,
             edit_existing=True,
+            preferred_comment_id=ticket.comment_id,
         )
         if ok is not None:
             done_ids.append(ticket.ticket_id)

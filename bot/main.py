@@ -313,11 +313,24 @@ def main() -> None:
         )
 
     if args.pr_number and args.repo and not args.dry_run:
-        CommentPoster(github_token).post_review(
+        comment_id = CommentPoster(github_token).post_review(
             repo=args.repo,
             pr_number=args.pr_number,
             review=review_result,
         )
+        if comment_id:
+            try:
+                from bot.escalate_ledger import EscalateLedger
+
+                n = EscalateLedger().attach_comment(
+                    args.repo, args.pr_number, comment_id
+                )
+                if n:
+                    logger.info(
+                        f"Attached comment_id={comment_id} to {n} escalate ticket(s)"
+                    )
+            except Exception as e:
+                logger.debug(f"Ledger attach_comment skipped: {e}")
 
     print(json.dumps(review_result.to_dict(), indent=2))
 

@@ -19,8 +19,8 @@ DEFAULT_QUOTA_PATH = Path.home() / ".cache" / "sorge" / "quota_daily.json"
 class QuotaTracker:
     """Track successful API calls against hardcoded RPD limits.
 
-    Seeds from env and/or ~/.cache/sorge/quota_daily.json so concurrent Actions
-    runs soft-share free-tier Gemini/OpenRouter budgets for the UTC day.
+    Seeds from env, local quota_daily.json, and optional Worker KV ledger
+    (`/ledger/quota`) so concurrent Actions runs soft-share free-tier budgets.
     """
 
     limits: dict[str, int] = field(default_factory=dict)
@@ -28,6 +28,7 @@ class QuotaTracker:
     warn_at_pct: float = 0.8
     adjustments: list[str] = field(default_factory=list)
     persist_path: Path | None = None
+    sync_remote: bool = True
 
     PROVIDER_KEYS = {
         "groq": "gpt",
@@ -41,6 +42,7 @@ class QuotaTracker:
         config: QuotaConfig,
         *,
         persist_path: Path | None = None,
+        sync_remote: bool = True,
     ) -> QuotaTracker:
         limits = {
             "gemini": config.gemini_rpd,
@@ -65,12 +67,37 @@ class QuotaTracker:
                     used[key] = max(used[key], int(os.getenv(env_name, "0")))
                 except ValueError:
                     pass
-        return cls(
+        tracker = cls(
             limits=limits,
             used=used,
             warn_at_pct=config.warn_at_pct,
             persist_path=path,
+            sync_remote=sync_remote,
         )
+        if sync_remote:
+            tracker._pull_remote()
+        return tracker
+
+    def _pull_remote(self) -> None:
+        try:
+            from bot.escalate_ledger import EscalateLedger
+
+            remote = EscalateLedger().fetch_quota_used()
+            for key, val in remote.items():
+                if key in self.used:
+                    self.used[key] = max(self.used[key], val)
+        except Exception as e:
+            logger.debug(f"Quota remote pull skipped: {e}")
+
+    def _push_remote(self) -> None:
+        if not self.sync_remote:
+            return
+        try:
+            from bot.escalate_ledger import EscalateLedger
+
+            EscalateLedger().push_quota_used(dict(self.used))
+        except Exception as e:
+            logger.debug(f"Quota remote push skipped: {e}")
 
     @staticmethod
     def _utc_today() -> str:
@@ -97,18 +124,18 @@ class QuotaTracker:
         return out
 
     def save(self) -> None:
-        if self.persist_path is None:
-            return
-        try:
-            self.persist_path.parent.mkdir(parents=True, exist_ok=True)
-            payload = {
-                "date": self._utc_today(),
-                "used": dict(self.used),
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-            }
-            self.persist_path.write_text(json.dumps(payload, indent=2))
-        except OSError as e:
-            logger.warning(f"Quota file save failed: {e}")
+        if self.persist_path is not None:
+            try:
+                self.persist_path.parent.mkdir(parents=True, exist_ok=True)
+                payload = {
+                    "date": self._utc_today(),
+                    "used": dict(self.used),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+                self.persist_path.write_text(json.dumps(payload, indent=2))
+            except OSError as e:
+                logger.warning(f"Quota file save failed: {e}")
+        self._push_remote()
 
     def remaining(self, provider: str) -> int:
         key = self.PROVIDER_KEYS.get(provider, provider)
