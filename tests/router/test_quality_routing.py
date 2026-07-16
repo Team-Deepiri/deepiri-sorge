@@ -34,6 +34,14 @@ def _chunk(
     )
 
 
+def test_complexity_escalate_threshold_is_068():
+    from bot.scheduling.complexity import COMPLEXITY_ESCALATE, is_high_complexity
+
+    assert COMPLEXITY_ESCALATE == 0.68
+    assert is_high_complexity(0.67) is False
+    assert is_high_complexity(0.68) is True
+
+
 def test_emotion81_effective_tokens_fit_groq_lane():
     """~3461 + ~2604 must stay in Groq lane when complexity is low."""
     chunk = _chunk(files=["cli/agent/AgentWorker.js"], tokens=3461, lines_added=80)
@@ -43,7 +51,7 @@ def test_emotion81_effective_tokens_fit_groq_lane():
         priority=60,
         complexity=complexity_score(chunk, prompt_overhead_tokens=overhead),
     )
-    assert scheduled.complexity < 0.6
+    assert scheduled.complexity < 0.68
     assert home_lane(3461 + overhead, complexity=scheduled.complexity, path_priority=60) == "groq"
 
 

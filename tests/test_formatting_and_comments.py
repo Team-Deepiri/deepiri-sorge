@@ -63,6 +63,7 @@ class TestCommentPosterFormatting:
 
         body = CommentPoster()._format_review_comment(review)
 
+        assert "<!-- sorge-review-anchor -->" in body
         assert "**Model:** heuristic (groq)" in body
         assert "### Summary\nSummary line\nextra details" in body
         assert ":warning: **src/service.py**:12" in body

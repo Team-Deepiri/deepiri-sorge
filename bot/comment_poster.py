@@ -11,6 +11,9 @@ from bot.utils.formatting import (
     normalize_whitespace,
 )
 
+# Stable marker so drain can find & edit the provisional review comment.
+SORGE_COMMENT_ANCHOR = "<!-- sorge-review-anchor -->"
+
 
 def score_to_label(score: float) -> str:
     """Map a numeric score to a human-readable label."""
@@ -38,9 +41,13 @@ class CommentPoster:
         pr_number: int,
         review: ReviewResult,  # type: ignore
         commit_id: str | None = None,
-    ) -> bool:
+        *,
+        edit_existing: bool = False,
+    ) -> int | None:
+        """Post (or optionally edit) a review comment. Returns comment id on success."""
         comment_body = self._format_review_comment(review)
-
+        if edit_existing:
+            return self.upsert_comment(repo, pr_number, comment_body)
         return self.post_comment(repo, pr_number, comment_body)
 
     def post_comment(
@@ -49,11 +56,14 @@ class CommentPoster:
         pr_number: int,
         body: str,
         commit_id: str | None = None,
-    ) -> bool:
+    ) -> int | None:
         if not self.token:
             logger.warning("No GitHub token - cannot post comment")
             logger.info(f"Would post:\n{body}")
-            return False
+            return None
+
+        if SORGE_COMMENT_ANCHOR not in body and "Sorge AI Code Review" in body:
+            body = f"{SORGE_COMMENT_ANCHOR}\n{body}"
 
         url = f"{self.base_url}/repos/{repo}/issues/{pr_number}/comments"
 
@@ -73,16 +83,29 @@ class CommentPoster:
         try:
             response = requests.post(url, json=payload, headers=headers)
             response.raise_for_status()
-
-            logger.info(f"Posted review comment to {repo}#{pr_number}")
-            return True
+            comment_id = response.json().get("id")
+            logger.info(f"Posted review comment to {repo}#{pr_number} id={comment_id}")
+            return int(comment_id) if comment_id is not None else None
 
         except requests.RequestException as e:
             logger.error(f"Failed to post comment: {e}")
-            return False
+            return None
+
+    def upsert_comment(self, repo: str, pr_number: int, body: str) -> int | None:
+        """Edit the latest Sorge review comment if present; otherwise post new."""
+        if SORGE_COMMENT_ANCHOR not in body and "Sorge AI Code Review" in body:
+            body = f"{SORGE_COMMENT_ANCHOR}\n{body}"
+        existing = self.get_previous_review(repo, pr_number)
+        if existing is not None:
+            if self.update_comment(repo, existing, body):
+                logger.info(f"Edited Sorge review comment {existing} on {repo}#{pr_number}")
+                return existing
+            logger.warning(f"Edit failed for comment {existing}; falling back to post")
+        return self.post_comment(repo, pr_number, body)
 
     def _format_rate_limited_comment(self, review: ReviewResult) -> str:  # type: ignore
         lines = [
+            SORGE_COMMENT_ANCHOR,
             "## Sorge AI Code Review",
             "",
             "**Status:** Temporarily unavailable — provider rate limits",
@@ -147,6 +170,7 @@ class CommentPoster:
             return self._format_rate_limited_comment(review)
 
         lines = [
+            SORGE_COMMENT_ANCHOR,
             "## Sorge AI Code Review",
             "",
             f"**Model:** {normalize_whitespace(review.model)} "
@@ -359,10 +383,16 @@ class CommentPoster:
             response.raise_for_status()
 
             comments = response.json()
-
-            for comment in comments:
-                body = comment.get("body", "")
-                if "deepiri-sorge" in body or "Sorge AI Code Review" in body:
+            # Prefer newest matching Sorge review (skip "Starting AI review...")
+            for comment in reversed(comments):
+                body = comment.get("body", "") or ""
+                if SORGE_COMMENT_ANCHOR in body:
+                    return comment.get("id")
+            for comment in reversed(comments):
+                body = comment.get("body", "") or ""
+                if "Starting AI review" in body:
+                    continue
+                if "Sorge AI Code Review" in body or "deepiri-sorge" in body:
                     return comment.get("id")
 
             return None
