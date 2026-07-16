@@ -295,6 +295,38 @@ function mergeUsed(a, b) {
   return out;
 }
 
+async function loadProviderStatus(env) {
+  if (!env.SORGE_LEDGER) return null;
+  const raw = await env.SORGE_LEDGER.get("provider_status");
+  if (!raw) return { cooldowns: {} };
+  try {
+    const data = JSON.parse(raw);
+    const now = Date.now() / 1000;
+    const cool = {};
+    for (const [k, v] of Object.entries(data.cooldowns || {})) {
+      const until = Number(v) || 0;
+      if (until > now) cool[k] = until;
+    }
+    return { cooldowns: cool };
+  } catch {
+    return { cooldowns: {} };
+  }
+}
+
+async function saveProviderStatus(env, data) {
+  if (!env.SORGE_LEDGER) return;
+  await env.SORGE_LEDGER.put("provider_status", JSON.stringify(data));
+}
+
+function mergeCooldowns(a, b) {
+  const out = { ...(a || {}) };
+  for (const [k, v] of Object.entries(b || {})) {
+    const n = Number(v) || 0;
+    out[k] = Math.max(Number(out[k]) || 0, n);
+  }
+  return out;
+}
+
 async function handleLedger(request, env, url) {
   if (!assertLedgerAuth(request, env)) {
     return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401 });
@@ -404,6 +436,23 @@ async function handleLedger(request, env, url) {
       updated_at: new Date().toISOString(),
     };
     await saveQuota(env, merged);
+    return json(merged);
+  }
+
+  // Cross-run provider cooldowns (max-merge cooldown_until timestamps).
+  if (url.pathname === "/ledger/provider_status" && request.method === "GET") {
+    const status = (await loadProviderStatus(env)) || { cooldowns: {} };
+    return json(status);
+  }
+
+  if (url.pathname === "/ledger/provider_status" && request.method === "POST") {
+    const body = await request.json();
+    const current = (await loadProviderStatus(env)) || { cooldowns: {} };
+    const merged = {
+      cooldowns: mergeCooldowns(current.cooldowns, body.cooldowns || {}),
+      updated_at: new Date().toISOString(),
+    };
+    await saveProviderStatus(env, merged);
     return json(merged);
   }
 

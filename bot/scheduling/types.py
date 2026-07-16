@@ -30,6 +30,28 @@ class ProviderResult:
     def is_payload_too_large(self) -> bool:
         return self.status_code == 413
 
+    @property
+    def is_capacity_failure(self) -> bool:
+        """Transient capacity / unusable response — not a completed review."""
+        if self.is_rate_limited or self.timed_out:
+            return True
+        if self.status_code is not None and self.status_code >= 500:
+            return True
+        err = (self.error or "").lower()
+        return any(
+            token in err
+            for token in (
+                "empty_response",
+                "empty_or_invalid",
+                "truncated",
+                "parse_warning",
+                "timeout",
+                "http_429",
+                "429",
+                "rate limit",
+            )
+        )
+
 
 @dataclass
 class ProviderStatus:

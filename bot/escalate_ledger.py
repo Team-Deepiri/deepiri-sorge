@@ -171,6 +171,42 @@ class EscalateLedger:
         except requests.RequestException as e:
             logger.warning(f"Ledger quota push failed: {e}")
 
+    def fetch_provider_cooldowns(self) -> dict[str, float]:
+        """Return provider -> cooldown_until unix ts from Worker KV."""
+        if not self.remote:
+            return {}
+        try:
+            r = requests.get(
+                f"{self.base_url}/ledger/provider_status",
+                headers=self._headers(),
+                timeout=15,
+            )
+            r.raise_for_status()
+            cool = r.json().get("cooldowns") or {}
+            out: dict[str, float] = {}
+            for k, v in cool.items():
+                try:
+                    out[str(k)] = float(v)
+                except (TypeError, ValueError):
+                    continue
+            return out
+        except (requests.RequestException, TypeError, ValueError) as e:
+            logger.warning(f"Ledger provider_status fetch failed: {e}")
+            return {}
+
+    def push_provider_cooldowns(self, cooldowns: dict[str, float]) -> None:
+        if not self.remote:
+            return
+        try:
+            requests.post(
+                f"{self.base_url}/ledger/provider_status",
+                headers=self._headers(),
+                json={"cooldowns": cooldowns},
+                timeout=15,
+            ).raise_for_status()
+        except requests.RequestException as e:
+            logger.warning(f"Ledger provider_status push failed: {e}")
+
     # --- remote ---
 
     def _enqueue_remote(self, tickets: list[EscalateTicket]) -> int:

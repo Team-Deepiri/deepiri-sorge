@@ -228,6 +228,9 @@ class ReviewScheduler:
                             status=outcome.status_code,
                             score=pick_sc,
                             max_tokens=getattr(runner, "_last_max_tokens", None),
+                            latency_ms=outcome.latency_ms,
+                            retry_after=outcome.retry_after,
+                            error=outcome.error,
                         )
                     )
 
@@ -261,28 +264,37 @@ class ReviewScheduler:
                             ok=False,
                             latency_ms=outcome.latency_ms,
                         )
+                        logger.info(
+                            f"Provider attempt failed provider={name} "
+                            f"status={outcome.status_code} "
+                            f"error={outcome.error!r} "
+                            f"retry_after={outcome.retry_after} "
+                            f"latency_ms={outcome.latency_ms:.0f} "
+                            f"capacity={outcome.is_capacity_failure}"
+                        )
                         if self._has_untried_eligible(scheduled):
                             still_waiting.append(scheduled)
                         elif (
-                            outcome.is_rate_limited
+                            outcome.is_capacity_failure
                             and scheduled.rate_limit_rounds < MAX_RATE_LIMIT_ROUNDS
                             and self.ctx.remaining_sec() > 20
                         ):
                             scheduled.rate_limit_rounds += 1
                             scheduled.attempted_providers.clear()
                             logger.info(
-                                f"Chunk rate-limited on all tried providers; "
+                                f"Chunk capacity-exhausted on tried providers; "
                                 f"requeue round {scheduled.rate_limit_rounds}/"
-                                f"{MAX_RATE_LIMIT_ROUNDS}"
+                                f"{MAX_RATE_LIMIT_ROUNDS} "
+                                f"(last_error={outcome.error or outcome.status_code})"
                             )
                             still_waiting.append(scheduled)
                         else:
-                            skipped.append(
-                                SkipRecord(
-                                    scheduled.chunk,
-                                    outcome.error or f"failed on {name}",
-                                )
-                            )
+                            err = outcome.error or f"failed on {name}"
+                            if outcome.is_capacity_failure and not err.startswith(
+                                "capacity:"
+                            ):
+                                err = f"capacity:{err}"
+                            skipped.append(SkipRecord(scheduled.chunk, err))
 
             still_waiting.sort(key=sort_key)
             queue = still_waiting
@@ -318,6 +330,9 @@ class ReviewScheduler:
         status: int | None,
         score: float | None,
         max_tokens: int | None = None,
+        latency_ms: float | None = None,
+        retry_after: float | None = None,
+        error: str | None = None,
     ) -> dict:
         tokens = effective_tokens(scheduled, self.ctx.prompt_overhead_tokens)
         reason = pick_reason(
@@ -340,6 +355,12 @@ class ReviewScheduler:
             meta["pick_score"] = round(score, 4)
         if max_tokens is not None:
             meta["max_tokens"] = max_tokens
+        if latency_ms is not None:
+            meta["latency_ms"] = round(latency_ms, 1)
+        if retry_after is not None:
+            meta["retry_after"] = retry_after
+        if error:
+            meta["error"] = error
         return meta
 
     def _escalate_reason(self, scheduled: ScheduledChunk, result: ReviewResult) -> str:
@@ -812,6 +833,14 @@ class ReviewScheduler:
             self.ctx.quota.record_failure(name)
             if isinstance(self.ctx.history, ProviderHistory):
                 self.ctx.history.mark_rate_limited(name, retry_after=outcome.retry_after)
+        elif outcome.is_capacity_failure and not outcome.is_payload_too_large:
+            # Truncated/empty/5xx: soft-cool so concurrent jobs skip this provider briefly.
+            cool = outcome.retry_after if outcome.retry_after is not None else 45.0
+            rt.health.record_rate_limit(cool)
+            if isinstance(self.ctx.history, ProviderHistory):
+                self.ctx.history.mark_rate_limited(name, retry_after=cool)
+            if outcome.status_code and outcome.status_code >= 500:
+                rt.health.record_server_error()
         elif outcome.is_payload_too_large:
             rt.health.record_payload_too_large()
             if scheduled is not None:
