@@ -41,16 +41,21 @@ class GroqRunner(BaseRunner):
         self._last_http_status: int | None = None
         self._last_retry_after: float | None = None
         self._last_timed_out: bool = False
+        self._effective_input_tokens: int | None = None
 
     @staticmethod
     def _estimate_message_tokens(messages: list[dict[str, str]]) -> int:
         chars = sum(len(m.get("content") or "") for m in messages)
         return max(1, chars // 4)
 
+    def _input_token_estimate(self, messages: list[dict[str, str]]) -> int:
+        if self._effective_input_tokens is not None and self._effective_input_tokens > 0:
+            return self._effective_input_tokens
+        return self._estimate_message_tokens(messages)
+
     @classmethod
-    def _cap_max_tokens(cls, messages: list[dict[str, str]], desired: int) -> int:
+    def _cap_max_tokens(cls, est_input: int, desired: int) -> int:
         """Cap output budget so input + max_tokens stays within Groq context."""
-        est_input = cls._estimate_message_tokens(messages)
         headroom = cls.CONTEXT_TOKEN_LIMIT - est_input - cls.CONTEXT_SAFETY_BUFFER
         if headroom < cls.MIN_OUTPUT_TOKENS:
             return max(256, headroom)
@@ -100,10 +105,11 @@ class GroqRunner(BaseRunner):
 
     def _call_api(self, diff: ParsedDiff, start_time: float) -> ReviewResult:
         messages = self._build_messages(diff)
-        first_cap = self._cap_max_tokens(messages, self.DESIRED_MAX_TOKENS)
+        est_input = self._input_token_estimate(messages)
+        first_cap = self._cap_max_tokens(est_input, self.DESIRED_MAX_TOKENS)
         result, truncated = self._complete(messages, start_time, first_cap)
         if truncated and result.parse_warning:
-            retry_cap = self._cap_max_tokens(messages, self.RETRY_MAX_TOKENS)
+            retry_cap = self._cap_max_tokens(est_input, self.RETRY_MAX_TOKENS)
             if retry_cap > first_cap:
                 logger.warning(
                     f"Groq truncated at max_tokens={first_cap} with parse_warning; "
