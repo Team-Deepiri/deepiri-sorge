@@ -1,4 +1,8 @@
-"""Context-first router: tiny → Groq, standard → Gemma, oversized → split."""
+"""Context-first router: size + quota + complexity-aware preference chains.
+
+Live dispatch is owned by ReviewScheduler; this module remains the size/quota
+planning layer (PR #23) and now shares complexity scoring for preference order.
+"""
 
 from __future__ import annotations
 
@@ -9,6 +13,7 @@ from bot.decision_engine import Action
 from bot.decision_engine import PRMetrics
 from bot.file_splitter import ReviewChunk
 from bot.quota_tracker import QuotaTracker
+from bot.scheduling.complexity import complexity_score, is_high_complexity, is_security_sensitive
 
 
 @dataclass
@@ -49,26 +54,36 @@ class ContextRouter:
         adjustments: list[str] = list(quota.adjustments)
 
         if metrics.total_tokens <= self.small_threshold and len(chunks) == 1:
-            action = self._pick(Action.GROQ, Action.OPENROUTER, Action.GEMINI, quota, adjustments)
+            chunk = chunks[0]
+            chain = self._preference_for_chunk(chunk, tiny=True)
+            action = self._pick(*chain, quota=quota, adjustments=adjustments)
             if action:
                 return RoutingPlan(
                     rung="tiny",
                     assignments=[
-                        ChunkAssignment(chunks[0], action, f"tiny PR (~{metrics.total_tokens} tokens)")
+                        ChunkAssignment(
+                            chunk,
+                            action,
+                            f"tiny PR (~{metrics.total_tokens} tokens; "
+                            f"complexity={complexity_score(chunk):.2f})",
+                        )
                     ],
                     quota_adjustments=adjustments,
                 )
 
         if metrics.total_tokens <= self.max_chunk_tokens and len(chunks) == 1:
-            action = self._pick(Action.OPENROUTER, Action.GEMINI, Action.GROQ, quota, adjustments)
+            chunk = chunks[0]
+            chain = self._preference_for_chunk(chunk, tiny=False)
+            action = self._pick(*chain, quota=quota, adjustments=adjustments)
             if action:
                 return RoutingPlan(
                     rung="standard",
                     assignments=[
                         ChunkAssignment(
-                            chunks[0],
+                            chunk,
                             action,
-                            f"standard PR (~{metrics.total_tokens} tokens)",
+                            f"standard PR (~{metrics.total_tokens} tokens; "
+                            f"complexity={complexity_score(chunk):.2f})",
                         )
                     ],
                     quota_adjustments=adjustments,
@@ -88,6 +103,19 @@ class ContextRouter:
             quota_adjustments=adjustments,
         )
 
+    def _preference_for_chunk(
+        self,
+        chunk: ReviewChunk,
+        *,
+        tiny: bool,
+    ) -> tuple[Action | None, Action | None, Action | None]:
+        cx = complexity_score(chunk)
+        if is_security_sensitive(chunk) or is_high_complexity(cx):
+            return (Action.GEMINI, Action.OPENROUTER, Action.GROQ if tiny else None)
+        if tiny:
+            return (Action.GROQ, Action.OPENROUTER, Action.GEMINI)
+        return (Action.OPENROUTER, Action.GEMINI, Action.GROQ)
+
     def _route_chunk(
         self,
         chunk: ReviewChunk,
@@ -95,28 +123,34 @@ class ContextRouter:
         adjustments: list[str],
     ) -> tuple[Action | None, str]:
         tokens = chunk.estimated_tokens
+        cx = complexity_score(chunk)
 
         if tokens <= self.small_threshold:
-            action = self._pick(Action.GROQ, Action.OPENROUTER, None, quota, adjustments)
+            chain = self._preference_for_chunk(chunk, tiny=True)
+            action = self._pick(*chain, quota=quota, adjustments=adjustments)
             if action:
-                return action, f"tiny chunk ({tokens} tokens)"
+                return action, f"tiny chunk ({tokens} tokens; complexity={cx:.2f})"
 
         if tokens <= self.max_chunk_tokens:
-            action = self._pick(Action.OPENROUTER, Action.GEMINI, None, quota, adjustments)
+            chain = self._preference_for_chunk(chunk, tiny=False)
+            action = self._pick(*chain, quota=quota, adjustments=adjustments)
             if action:
-                return action, f"standard chunk ({tokens} tokens)"
+                return action, f"standard chunk ({tokens} tokens; complexity={cx:.2f})"
 
-        action = self._pick(Action.GEMINI, Action.OPENROUTER, None, quota, adjustments)
+        action = self._pick(
+            Action.GEMINI, Action.OPENROUTER, None, quota=quota, adjustments=adjustments
+        )
         if action:
-            return action, f"large chunk ({tokens} tokens)"
+            return action, f"large chunk ({tokens} tokens; complexity={cx:.2f})"
 
         return None, "no provider available"
 
     def _pick(
         self,
-        first: Action,
+        first: Action | None,
         second: Action | None,
         third: Action | None,
+        *,
         quota: QuotaTracker,
         adjustments: list[str],
     ) -> Action | None:

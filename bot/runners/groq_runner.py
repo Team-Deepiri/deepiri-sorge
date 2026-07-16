@@ -10,9 +10,13 @@ from loguru import logger
 
 from bot.config import CacheConfig
 from bot.diff_parser import ParsedDiff
+from bot.prompts import load_groq_bug_detector_template
 from bot.runners.base import BaseRunner, ReviewResult
 from bot.schemas import ReviewIssue
 from bot.utils.http_retry import post_with_retry
+
+# Cap repo context chars so input+output stay inside Groq's ~8k window.
+_GROQ_CONTEXT_CHAR_CAP = 6_000
 
 
 class GroqRunner(BaseRunner):
@@ -23,7 +27,8 @@ class GroqRunner(BaseRunner):
     # Groq free tier validates input + max_tokens against ~8k total context.
     CONTEXT_TOKEN_LIMIT = 8192
     CONTEXT_SAFETY_BUFFER = 192
-    MIN_OUTPUT_TOKENS = 1536
+    HEADROOM_SAFETY = 0.85
+    MIN_OUTPUT_TOKENS = 1024
     DESIRED_MAX_TOKENS = 4096
     RETRY_MAX_TOKENS = 6144
 
@@ -42,6 +47,7 @@ class GroqRunner(BaseRunner):
         self._last_retry_after: float | None = None
         self._last_timed_out: bool = False
         self._effective_input_tokens: int | None = None
+        self._last_max_tokens: int | None = None
 
     @staticmethod
     def _estimate_message_tokens(messages: list[dict[str, str]]) -> int:
@@ -55,8 +61,9 @@ class GroqRunner(BaseRunner):
 
     @classmethod
     def _cap_max_tokens(cls, est_input: int, desired: int) -> int:
-        """Cap output budget so input + max_tokens stays within Groq context."""
-        headroom = cls.CONTEXT_TOKEN_LIMIT - est_input - cls.CONTEXT_SAFETY_BUFFER
+        """Cap output so input + max_tokens stays within Groq context (* 0.85 safety)."""
+        raw_headroom = cls.CONTEXT_TOKEN_LIMIT - est_input - cls.CONTEXT_SAFETY_BUFFER
+        headroom = int(raw_headroom * cls.HEADROOM_SAFETY)
         if headroom < cls.MIN_OUTPUT_TOKENS:
             return max(256, headroom)
         return max(cls.MIN_OUTPUT_TOKENS, min(desired, headroom))
@@ -70,6 +77,7 @@ class GroqRunner(BaseRunner):
         self._last_http_status = None
         self._last_retry_after = None
         self._last_timed_out = False
+        self._last_max_tokens = None
 
         try:
             return self._call_api(diff, start_time)
@@ -90,14 +98,42 @@ class GroqRunner(BaseRunner):
                         self._last_retry_after = None
             return None
 
+    def _build_prompt(self, diff: ParsedDiff) -> str:
+        template = load_groq_bug_detector_template()
+        context_block = self._repo_context or (
+            "(No repository context — note reuse risks if the PR adds helpers already in repo.)"
+        )
+        if len(context_block) > _GROQ_CONTEXT_CHAR_CAP:
+            context_block = (
+                context_block[:_GROQ_CONTEXT_CHAR_CAP]
+                + "\n\n… _(repo context truncated for Groq context window)_"
+            )
+
+        return f"""{template}
+
+---
+
+## DIFF (primary review target)
+Files changed: {", ".join(diff.files)}
+Total lines: +{diff.lines_added} -{diff.lines_deleted}
+
+```diff
+{diff.raw}
+```
+
+---
+
+## REPOSITORY CONTEXT
+{context_block}
+"""
+
     def _build_messages(self, diff: ParsedDiff) -> list[dict[str, str]]:
         return [
             {
                 "role": "system",
                 "content": (
-                    "You are a code review bot. Respond with a single raw JSON object only. "
-                    "No markdown fences, no prose before or after the JSON. "
-                    "Keep the summary concise; prefer fewer, higher-signal issues."
+                    "You are a fast production bug detector. Respond with a single raw JSON "
+                    "object only. No markdown fences. Max 5 hard findings; ignore style nits."
                 ),
             },
             {"role": "user", "content": self._build_prompt(diff)},
@@ -128,6 +164,7 @@ class GroqRunner(BaseRunner):
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.api_key}",
         }
+        self._last_max_tokens = max_tokens
 
         payload = {
             "model": self.model,
@@ -172,7 +209,10 @@ class GroqRunner(BaseRunner):
                     suggestion="Split large PRs into smaller changes",
                 )
             ],
-            recommendations=["Split large PRs into smaller changes", "Use a smaller model for quicker feedback"],
+            recommendations=[
+                "Split large PRs into smaller changes",
+                "Use a smaller model for quicker feedback",
+            ],
             score=5.0,
             latency_ms=(time.time() - start_time) * 1000,
             model=self.model,

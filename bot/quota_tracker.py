@@ -48,7 +48,12 @@ class QuotaTracker:
         return max(0, self.limits.get(key, 0) - self.used.get(key, 0))
 
     def can_use(self, provider: str) -> bool:
-        return self.remaining(provider) > 0
+        """True when remaining > soft reserve (keep 1 free-tier call as buffer)."""
+        key = self.PROVIDER_KEYS.get(provider, provider)
+        remaining = self.remaining(provider)
+        # Soft daily budget: never spend the last free-tier slot on pecking.
+        soft_reserve = 1 if key in ("gemini", "openrouter") else 0
+        return remaining > soft_reserve
 
     def record(self, provider: str) -> None:
         key = self.PROVIDER_KEYS.get(provider, provider)
