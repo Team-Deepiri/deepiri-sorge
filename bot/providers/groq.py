@@ -44,6 +44,9 @@ class GroqProvider:
     def review(self, chunk: ReviewChunk, run: RunContext) -> ProviderResult:
         self._runner._last_http_status = None
         self._runner._last_retry_after = None
+        self._runner._effective_input_tokens = (
+            max(0, chunk.estimated_tokens) + max(0, run.prompt_overhead_tokens)
+        )
         result = run_runner_review(
             provider_name=self.name,
             runner=self._runner,

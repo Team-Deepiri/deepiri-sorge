@@ -353,12 +353,11 @@ class TestGroqRunner:
 
     def test_caps_max_tokens_when_prompt_is_large(self, sample_diff):
         runner = GroqRunner(api_key="fake-groq-key")
-        messages = runner._build_messages(sample_diff)
-        # Simulate emotion#81-sized input (~6065 tokens).
-        messages[1]["content"] = "x" * (6065 * 4)
-        capped = GroqRunner._cap_max_tokens(messages, GroqRunner.DESIRED_MAX_TOKENS)
+        runner._effective_input_tokens = 6065
+        capped = GroqRunner._cap_max_tokens(6065, GroqRunner.DESIRED_MAX_TOKENS)
         assert capped < GroqRunner.DESIRED_MAX_TOKENS
         assert capped >= GroqRunner.MIN_OUTPUT_TOKENS
+        assert 6065 + capped <= GroqRunner.CONTEXT_TOKEN_LIMIT
 
     def test_retries_with_higher_max_tokens_when_truncated_and_unparsed(self, sample_diff):
         runner = GroqRunner(api_key="fake-groq-key")
