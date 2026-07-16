@@ -196,6 +196,10 @@ Total lines: +{diff.lines_added} -{diff.lines_deleted}
             tokens_used=tokens_used,
             review_type="groq",
         )
+        # Truncated + empty/high score is not a trustworthy all-clear.
+        if truncated and not result.issues and result.score >= 8.5:
+            result.parse_warning = result.parse_warning or "truncated_vacuous_review"
+            result.score = min(float(result.score), 7.0)
         return result, truncated
 
     def _timeout_result(self, start_time: float) -> ReviewResult:

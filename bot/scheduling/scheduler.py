@@ -229,12 +229,31 @@ class ReviewScheduler:
                         self._store_cache(scheduled, outcome.result)
 
                         final = outcome.result
-                        if self._should_escalate(scheduled, name, final):
-                            escalated = self._escalate_to_gemini(scheduled)
-                            if escalated is not None:
-                                final = escalated
-                                scheduled.escalated = True
-                                self.meta.escalations += 1
+                        if self._needs_escalate(scheduled, name, final):
+                            if self._can_escalate_now():
+                                escalated = self._escalate_to_gemini(scheduled)
+                                if escalated is not None:
+                                    final = escalated
+                                    scheduled.escalated = True
+                                    self.meta.escalations += 1
+                                elif self._is_vacuous_review(scheduled, final):
+                                    final = self._soften_incomplete_triage(final)
+                                    self.meta.escalation_blocked += 1
+                            elif self._is_vacuous_review(scheduled, final):
+                                # Wait briefly if Gemini is only cooling (not quota-dead).
+                                waited = self._wait_for_gemini_escalate(max_wait=45.0)
+                                if waited and self._can_escalate_now():
+                                    escalated = self._escalate_to_gemini(scheduled)
+                                    if escalated is not None:
+                                        final = escalated
+                                        scheduled.escalated = True
+                                        self.meta.escalations += 1
+                                    else:
+                                        final = self._soften_incomplete_triage(final)
+                                        self.meta.escalation_blocked += 1
+                                else:
+                                    final = self._soften_incomplete_triage(final)
+                                    self.meta.escalation_blocked += 1
                         results.append(final)
                     else:
                         self._record_failure(name, outcome, scheduled)
@@ -322,19 +341,25 @@ class ReviewScheduler:
             meta["max_tokens"] = max_tokens
         return meta
 
-    def _should_escalate(
+    @staticmethod
+    def _is_vacuous_review(scheduled: ScheduledChunk, result: ReviewResult) -> bool:
+        """High score + zero issues on a non-trivial diff is usually under-review."""
+        if result.issues:
+            return False
+        if result.score < 8.5:
+            return False
+        return scheduled.chunk.estimated_tokens >= 1500
+
+    def _needs_escalate(
         self,
         scheduled: ScheduledChunk,
         provider: str,
         result: ReviewResult,
     ) -> bool:
+        """Whether deeper review is warranted (independent of Gemini availability)."""
         if provider != "groq":
             return False
         if "gemini" not in self.providers:
-            return False
-        if not self.ctx.quota.can_use("gemini"):
-            return False
-        if isinstance(self.ctx.history, ProviderHistory) and self.ctx.history.is_cooling("gemini"):
             return False
         if is_security_sensitive(scheduled.chunk):
             return True
@@ -342,9 +367,82 @@ class ReviewScheduler:
             return True
         if result.score < ESCALATE_SCORE_THRESHOLD:
             return True
+        if ReviewScheduler._is_vacuous_review(scheduled, result):
+            return True
         if scheduled.chunk.estimated_tokens >= 2500 and not result.issues:
             return True
         return False
+
+    def _can_escalate_now(self) -> bool:
+        if "gemini" not in self.providers:
+            return False
+        if not self.ctx.quota.can_use("gemini"):
+            return False
+        if isinstance(self.ctx.history, ProviderHistory) and self.ctx.history.is_cooling("gemini"):
+            return False
+        rt = self.ctx.providers.get("gemini")
+        if not rt or rt.health.is_cooling():
+            return False
+        if rt.health.score < self.ctx.health_threshold:
+            return False
+        return True
+
+    @staticmethod
+    def _soften_incomplete_triage(result: ReviewResult) -> ReviewResult:
+        """Avoid publishing a fake production-ready score when escalate was needed but blocked."""
+        result.score = min(float(result.score), 7.0)
+        warning = "escalation_unavailable_vacuous_triage"
+        if result.parse_warning:
+            result.parse_warning = f"{result.parse_warning};{warning}"
+        else:
+            result.parse_warning = warning
+        note = (
+            "Deep review (Gemini) was unavailable after a thin Groq triage; "
+            "re-run `/sorge` when free-tier limits recover for a fuller pass."
+        )
+        recs = list(result.recommendations or [])
+        if note not in recs:
+            recs.insert(0, note)
+        result.recommendations = recs
+        if not (result.summary or "").strip():
+            result.summary = "Partial triage only — escalate unavailable."
+        elif "Partial triage" not in result.summary:
+            result.summary = f"{result.summary.rstrip()} (partial triage; escalate unavailable)"
+        return result
+
+    def _should_escalate(
+        self,
+        scheduled: ScheduledChunk,
+        provider: str,
+        result: ReviewResult,
+    ) -> bool:
+        return self._needs_escalate(scheduled, provider, result) and self._can_escalate_now()
+
+    def _wait_for_gemini_escalate(self, *, max_wait: float = 45.0) -> bool:
+        """Block briefly for Gemini cool/health if escalate is needed."""
+        if "gemini" not in self.ctx.providers:
+            return False
+        if not self.ctx.quota.can_use("gemini"):
+            return False
+        waits: list[float] = []
+        rt = self.ctx.providers["gemini"]
+        cool = rt.health.cooling_remaining()
+        if cool > 0:
+            waits.append(cool)
+        if isinstance(self.ctx.history, ProviderHistory):
+            hist = self.ctx.history.cooling_remaining("gemini")
+            if hist > 0:
+                waits.append(hist)
+        if not waits:
+            return self._can_escalate_now()
+        wait = min(waits)
+        if wait <= 0:
+            return self._can_escalate_now()
+        if wait > max_wait or wait > self.ctx.remaining_sec() - 5:
+            return False
+        logger.info(f"Waiting {wait:.1f}s for Gemini before escalate")
+        time.sleep(wait)
+        return self._can_escalate_now()
 
     def _escalate_to_gemini(self, scheduled: ScheduledChunk) -> ReviewResult | None:
         if "gemini" not in self.providers:

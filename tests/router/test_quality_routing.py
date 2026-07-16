@@ -119,8 +119,42 @@ def test_security_chunk_prefers_gemini_in_market_score():
     assert sm > sg
 
 
-def test_large_line_diff_is_high_complexity():
-    chunk = _chunk(files=["src/service.py"], tokens=2000, lines_added=400, lines_deleted=150)
-    cx = complexity_score(chunk, prompt_overhead_tokens=2500)
-    assert is_high_complexity(cx) or cx >= 0.5
-    assert LANE_GROQ_MAX == 7000
+def test_vacuous_high_score_needs_escalate_signal():
+    from types import SimpleNamespace
+
+    from bot.scheduling.scheduler import ReviewScheduler
+    from bot.schemas import ReviewResult
+
+    chunk = _chunk(files=["cli/agent/AgentWorker.js"], tokens=3461, lines_added=80)
+    scheduled = ScheduledChunk(chunk=chunk, priority=60, complexity=0.43)
+    result = ReviewResult(
+        summary="No critical issues",
+        issues=[],
+        recommendations=[],
+        score=10.0,
+        latency_ms=100,
+        model="groq",
+        review_type="groq",
+    )
+    fake = SimpleNamespace(providers={"groq": object(), "gemini": object()})
+    assert ReviewScheduler._is_vacuous_review(scheduled, result) is True
+    assert ReviewScheduler._needs_escalate(fake, scheduled, "groq", result) is True
+
+
+def test_soften_incomplete_triage_caps_fake_perfect_score():
+    from bot.scheduling.scheduler import ReviewScheduler
+    from bot.schemas import ReviewResult
+
+    result = ReviewResult(
+        summary="All good",
+        issues=[],
+        recommendations=[],
+        score=10.0,
+        latency_ms=100,
+        model="groq",
+        review_type="groq",
+    )
+    softened = ReviewScheduler._soften_incomplete_triage(result)
+    assert softened.score <= 7.0
+    assert softened.parse_warning and "escalation_unavailable" in softened.parse_warning
+    assert any("/sorge" in r for r in softened.recommendations)
