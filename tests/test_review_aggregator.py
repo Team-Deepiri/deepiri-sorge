@@ -4,6 +4,7 @@ from bot.review_aggregator import ReviewAggregator
 from bot.schemas import ReviewIssue, ReviewResult
 from bot.file_splitter import ReviewChunk
 from bot.diff_parser import ParsedDiff
+from bot.scheduling.types import SkipRecord
 
 
 def _result(score: float, review_type: str) -> ReviewResult:
@@ -53,3 +54,17 @@ def test_unreviewable_adds_info_issue():
     )
     merged = ReviewAggregator.merge([], rung="oversized", unreviewable=[chunk])
     assert any("too big" in i.message for i in merged.issues)
+
+
+def test_rate_limit_only_skips_are_not_quality_zero():
+    chunk = ReviewChunk(
+        files=["src/a.py"],
+        parsed_diff=ParsedDiff(raw="+x\n"),
+        estimated_tokens=1000,
+    )
+    skipped = [SkipRecord(chunk, "http_429")]
+    merged = ReviewAggregator.merge([], rung="scheduled", skipped=skipped)
+    assert merged.review_type == "rate_limited"
+    assert merged.issues == []
+    assert "not a code-quality score" in merged.summary
+    assert any("/sorge" in r for r in merged.recommendations)

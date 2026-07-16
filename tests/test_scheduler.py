@@ -35,6 +35,17 @@ def test_health_drops_on_429_and_cools():
     assert h.is_cooling()
 
 
+def test_health_seconds_until_score_after_penalty():
+    h = HealthTracker(100)
+    h.record_rate_limit(retry_after=1)
+    # 100 - 40 = 60; threshold 25 is already met
+    assert h.seconds_until_score(25) == 0.0
+    h.record_rate_limit(retry_after=1)
+    # 60 - 40 = 20; need ~50s to reach 25
+    wait = h.seconds_until_score(25)
+    assert 40 <= wait <= 60
+
+
 def test_market_score_rejects_oversized_context():
     status = ProviderStatus(
         name="groq",
@@ -88,7 +99,7 @@ def test_lane_affinity_prefers_groq_when_it_fits():
         name="groq",
         health=100,
         rpm_remaining=10,
-        max_context_tokens=4500,
+        max_context_tokens=7000,
         nominal_latency_ms=400,
         quality_prior=0.9,
     )
@@ -104,6 +115,41 @@ def test_lane_affinity_prefers_groq_when_it_fits():
     so = score(
         openrouter, scheduled, prompt_overhead_tokens=overhead, historical_quality=0.95
     )
+    assert sg > so
+
+
+def test_lane_affinity_prefers_groq_for_emotion_sized_prompt():
+    """~3461 diff + ~2600 overhead (emotion#81) must still home on Groq."""
+    from bot.scheduling.market_score import score_provider as score
+
+    chunk = ReviewChunk(
+        files=["src/a.py"],
+        parsed_diff=ParsedDiff(raw="+x\n"),
+        estimated_tokens=3461,
+    )
+    scheduled = ScheduledChunk(chunk=chunk, priority=80)
+    overhead = 2604
+    groq = ProviderStatus(
+        name="groq",
+        health=100,
+        rpm_remaining=10,
+        max_context_tokens=7000,
+        nominal_latency_ms=400,
+        quality_prior=0.9,
+    )
+    openrouter = ProviderStatus(
+        name="openrouter",
+        health=100,
+        rpm_remaining=10,
+        max_context_tokens=100000,
+        nominal_latency_ms=800,
+        quality_prior=0.95,
+    )
+    sg = score(groq, scheduled, prompt_overhead_tokens=overhead, historical_quality=0.5)
+    so = score(
+        openrouter, scheduled, prompt_overhead_tokens=overhead, historical_quality=0.95
+    )
+    assert sg > 0
     assert sg > so
 
 

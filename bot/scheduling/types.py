@@ -49,6 +49,11 @@ class ScheduledChunk:
     chunk: ReviewChunk
     priority: int = 50
     attempted_providers: set[str] = field(default_factory=set)
+    # After all providers 429, clear attempts and wait once (bounded).
+    rate_limit_rounds: int = 0
+
+
+MAX_RATE_LIMIT_ROUNDS = 3
 
 
 @dataclass

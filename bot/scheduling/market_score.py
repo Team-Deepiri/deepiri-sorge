@@ -22,7 +22,8 @@ DEFAULT_WEIGHTS = {
 TEMPLATE_OVERHEAD_TOKENS = 2500
 
 # Soft home lanes by effective prompt size (diff + overhead).
-LANE_GROQ_MAX = 4500
+# Groq free tier is ~8k total; leave headroom for tokenizer variance / system bits.
+LANE_GROQ_MAX = 7000
 LANE_OPENROUTER_MAX = 100_000
 
 
@@ -50,8 +51,9 @@ def lane_affinity(provider: str, tokens: int) -> float:
         return 0.25
     if home == "openrouter" and provider == "gemini":
         return 0.45
+    # context_fit already zeros Groq when over max_context; soft affinity for edge cases
     if home == "openrouter" and provider == "groq":
-        return 0.0  # groq cannot fit this lane
+        return 0.2
     if home == "gemini" and provider == "openrouter":
         return 0.4
     if home == "gemini" and provider == "groq":
