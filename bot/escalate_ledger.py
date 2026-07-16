@@ -109,6 +109,68 @@ class EscalateLedger:
         data = self._load_file()
         return sum(1 for t in data.get("tickets", []) if t.get("status") == "pending")
 
+    def attach_comment(self, repo: str, pr_number: int, comment_id: int) -> int:
+        """Stamp comment_id onto pending tickets for this PR (helps drain edit)."""
+        if self.remote:
+            try:
+                r = requests.post(
+                    f"{self.base_url}/ledger/tickets/attach_comment",
+                    headers=self._headers(),
+                    json={
+                        "repo": repo,
+                        "pr_number": pr_number,
+                        "comment_id": comment_id,
+                    },
+                    timeout=20,
+                )
+                r.raise_for_status()
+                return int(r.json().get("updated") or 0)
+            except requests.RequestException as e:
+                logger.warning(f"Ledger attach_comment failed: {e}")
+                return 0
+        data = self._load_file()
+        n = 0
+        for t in data.get("tickets", []):
+            if (
+                t.get("repo") == repo
+                and int(t.get("pr_number") or 0) == pr_number
+                and t.get("status") in ("pending", "claimed")
+            ):
+                t["comment_id"] = comment_id
+                n += 1
+        if n:
+            self._save_file(data)
+        return n
+
+    def fetch_quota_used(self) -> dict[str, int]:
+        if not self.remote:
+            return {}
+        try:
+            r = requests.get(
+                f"{self.base_url}/ledger/quota",
+                headers=self._headers(),
+                timeout=15,
+            )
+            r.raise_for_status()
+            used = r.json().get("used") or {}
+            return {str(k): int(v) for k, v in used.items()}
+        except (requests.RequestException, TypeError, ValueError) as e:
+            logger.warning(f"Ledger quota fetch failed: {e}")
+            return {}
+
+    def push_quota_used(self, used: dict[str, int]) -> None:
+        if not self.remote:
+            return
+        try:
+            requests.post(
+                f"{self.base_url}/ledger/quota",
+                headers=self._headers(),
+                json={"used": used},
+                timeout=15,
+            ).raise_for_status()
+        except requests.RequestException as e:
+            logger.warning(f"Ledger quota push failed: {e}")
+
     # --- remote ---
 
     def _enqueue_remote(self, tickets: list[EscalateTicket]) -> int:

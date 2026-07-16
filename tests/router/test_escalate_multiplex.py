@@ -116,3 +116,26 @@ def test_file_ledger_cancel_pr_supersedes(tmp_path: Path):
     ledger.enqueue([t1])
     assert ledger.cancel_pr("org/r", 3) == 1
     assert ledger.pending_count() == 0
+
+
+def test_file_ledger_attach_comment(tmp_path: Path):
+    path = tmp_path / "ledger.json"
+    ledger = EscalateLedger(file_path=path)
+    ticket = EscalateTicket(
+        ticket_id="c1",
+        reason="low_score",
+        files=["a.py"],
+        estimated_tokens=10,
+        complexity=0.4,
+        priority=50,
+        groq_summary="s",
+        groq_score=4.0,
+        groq_issues=[],
+        contested_diff="+",
+        repo="org/r",
+        pr_number=9,
+    )
+    ledger.enqueue([ticket])
+    assert ledger.attach_comment("org/r", 9, 4242) == 1
+    claimed = ledger.claim(limit=1)
+    assert claimed[0].comment_id == 4242

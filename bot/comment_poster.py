@@ -43,11 +43,17 @@ class CommentPoster:
         commit_id: str | None = None,
         *,
         edit_existing: bool = False,
+        preferred_comment_id: int | None = None,
     ) -> int | None:
         """Post (or optionally edit) a review comment. Returns comment id on success."""
         comment_body = self._format_review_comment(review)
         if edit_existing:
-            return self.upsert_comment(repo, pr_number, comment_body)
+            return self.upsert_comment(
+                repo,
+                pr_number,
+                comment_body,
+                preferred_comment_id=preferred_comment_id,
+            )
         return self.post_comment(repo, pr_number, comment_body)
 
     def post_comment(
@@ -91,16 +97,28 @@ class CommentPoster:
             logger.error(f"Failed to post comment: {e}")
             return None
 
-    def upsert_comment(self, repo: str, pr_number: int, body: str) -> int | None:
-        """Edit the latest Sorge review comment if present; otherwise post new."""
+    def upsert_comment(
+        self,
+        repo: str,
+        pr_number: int,
+        body: str,
+        *,
+        preferred_comment_id: int | None = None,
+    ) -> int | None:
+        """Edit a known/latest Sorge review comment if present; otherwise post new."""
         if SORGE_COMMENT_ANCHOR not in body and "Sorge AI Code Review" in body:
             body = f"{SORGE_COMMENT_ANCHOR}\n{body}"
+        candidates: list[int] = []
+        if preferred_comment_id is not None:
+            candidates.append(int(preferred_comment_id))
         existing = self.get_previous_review(repo, pr_number)
-        if existing is not None:
-            if self.update_comment(repo, existing, body):
-                logger.info(f"Edited Sorge review comment {existing} on {repo}#{pr_number}")
-                return existing
-            logger.warning(f"Edit failed for comment {existing}; falling back to post")
+        if existing is not None and existing not in candidates:
+            candidates.append(existing)
+        for cid in candidates:
+            if self.update_comment(repo, cid, body):
+                logger.info(f"Edited Sorge review comment {cid} on {repo}#{pr_number}")
+                return cid
+            logger.warning(f"Edit failed for comment {cid}; trying next candidate")
         return self.post_comment(repo, pr_number, body)
 
     def _format_rate_limited_comment(self, review: ReviewResult) -> str:  # type: ignore

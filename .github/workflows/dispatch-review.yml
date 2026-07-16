@@ -106,7 +106,7 @@ jobs:
       - name: Generate App installation token
         id: app-token
         if: steps.inputs.outputs.MODE == 'review'
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.SORGE_APP_ID }}
           private-key: ${{ secrets.SORGE_APP_PRIVATE_KEY }}
@@ -133,7 +133,7 @@ jobs:
             -d '{"body": "Starting AI review..."}'
 
       - name: Checkout sorge
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Resolve PR head SHA
         id: pr-head
@@ -152,7 +152,7 @@ jobs:
 
       - name: Checkout target repository
         if: steps.inputs.outputs.MODE == 'review'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: ${{ steps.inputs.outputs.REPO }}
           path: target-repo
@@ -161,20 +161,21 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
 
       - name: Restore provider + escalate ledger cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cache/sorge/provider_stats.json
             ~/.cache/sorge/escalate_ledger.json
             ~/.cache/sorge/quota_daily.json
-          key: sorge-runtime-v3-${{ github.run_id }}
+          key: sorge-runtime-v4-${{ github.run_id }}
           restore-keys: |
+            sorge-runtime-v4-
             sorge-runtime-v3-
             sorge-runtime-v2-
             sorge-provider-stats-v1-
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -184,7 +185,7 @@ jobs:
           python -m pip install "poetry==${{ env.POETRY_VERSION }}"
 
       - name: Cache Poetry virtualenv
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         id: poetry-cache
         with:
           path: ~/.cache/pypoetry
@@ -243,7 +244,7 @@ jobs:
 
       - name: Upload artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sorge-${{ steps.inputs.outputs.MODE }}-${{ steps.inputs.outputs.PR_NUMBER || 'drain' }}
           path: |

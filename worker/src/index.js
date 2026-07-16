@@ -264,6 +264,37 @@ async function saveLedger(env, data) {
   await env.SORGE_LEDGER.put("tickets", JSON.stringify(data));
 }
 
+async function loadQuota(env) {
+  if (!env.SORGE_LEDGER) return null;
+  const raw = await env.SORGE_LEDGER.get("quota_daily");
+  if (!raw) return { date: utcToday(), used: {} };
+  try {
+    const data = JSON.parse(raw);
+    if (data.date !== utcToday()) return { date: utcToday(), used: {} };
+    return { date: data.date, used: data.used || {} };
+  } catch {
+    return { date: utcToday(), used: {} };
+  }
+}
+
+async function saveQuota(env, data) {
+  if (!env.SORGE_LEDGER) return;
+  await env.SORGE_LEDGER.put("quota_daily", JSON.stringify(data));
+}
+
+function utcToday() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function mergeUsed(a, b) {
+  const out = { ...(a || {}) };
+  for (const [k, v] of Object.entries(b || {})) {
+    const n = Number(v) || 0;
+    out[k] = Math.max(Number(out[k]) || 0, n);
+  }
+  return out;
+}
+
 async function handleLedger(request, env, url) {
   if (!assertLedgerAuth(request, env)) {
     return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401 });
@@ -339,6 +370,41 @@ async function handleLedger(request, env, url) {
     }
     await saveLedger(env, data);
     return json({ cancelled: n });
+  }
+
+  if (url.pathname === "/ledger/tickets/attach_comment" && request.method === "POST") {
+    const body = await request.json();
+    let n = 0;
+    for (const t of data.tickets) {
+      if (
+        t.repo === body.repo &&
+        Number(t.pr_number) === Number(body.pr_number) &&
+        (t.status === "pending" || t.status === "claimed")
+      ) {
+        t.comment_id = body.comment_id;
+        n += 1;
+      }
+    }
+    await saveLedger(env, data);
+    return json({ updated: n });
+  }
+
+  // Shared soft RPD across Actions runs (max-merge by UTC day).
+  if (url.pathname === "/ledger/quota" && request.method === "GET") {
+    const q = (await loadQuota(env)) || { date: utcToday(), used: {} };
+    return json(q);
+  }
+
+  if (url.pathname === "/ledger/quota" && request.method === "POST") {
+    const body = await request.json();
+    const current = (await loadQuota(env)) || { date: utcToday(), used: {} };
+    const merged = {
+      date: utcToday(),
+      used: mergeUsed(current.used, body.used || {}),
+      updated_at: new Date().toISOString(),
+    };
+    await saveQuota(env, merged);
+    return json(merged);
   }
 
   return new Response("Not found", { status: 404 });

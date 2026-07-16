@@ -32,6 +32,7 @@ class EscalateTicket:
     pr_number: int = 0
     installation_id: int | None = None
     head_sha: str = ""
+    comment_id: int | None = None
     status: str = "pending"
     created_at: float = field(default_factory=time.time)
 
