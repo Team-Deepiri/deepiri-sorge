@@ -69,3 +69,11 @@ class HealthTracker:
     def cooling_remaining(self) -> float:
         with self._lock:
             return max(0.0, self.cooling_until - time.monotonic())
+
+    def seconds_until_score(self, target: float) -> float:
+        """Estimated wait until score recovers to ``target`` (+1 health per 10s)."""
+        with self._lock:
+            self._maybe_recover()
+            if self._score >= target:
+                return 0.0
+            return (target - self._score) * 10.0

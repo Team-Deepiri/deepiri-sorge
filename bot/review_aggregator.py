@@ -8,6 +8,30 @@ from bot.file_splitter import ReviewChunk
 from bot.scheduling.types import SchedulerMeta, SkipRecord
 
 
+def _is_rate_limit_skip(reason: str) -> bool:
+    r = (reason or "").lower()
+    return any(
+        token in r
+        for token in (
+            "http_429",
+            "429",
+            "rate limit",
+            "rate_limited",
+            "rate limited",
+            "no eligible provider",
+        )
+    )
+
+
+def _skip_issue(skip: SkipRecord) -> ReviewIssue:
+    return ReviewIssue(
+        severity="low",
+        file=skip.chunk.files[0] if skip.chunk.files else None,
+        message=f"Chunk skipped by scheduler: {skip.reason}",
+        suggestion="Re-run /sorge when provider rate limits recover",
+    )
+
+
 class ReviewAggregator:
 
     @staticmethod
@@ -32,14 +56,8 @@ class ReviewAggregator:
                     )
                 )
             for skip in skipped or []:
-                issues.append(
-                    ReviewIssue(
-                        severity="low",
-                        file=skip.chunk.files[0] if skip.chunk.files else None,
-                        message=f"Chunk skipped by scheduler: {skip.reason}",
-                        suggestion="Re-run /sorge when provider rate limits recover",
-                    )
-                )
+                issues.append(_skip_issue(skip))
+
             meta = {
                 "rung": rung,
                 "chunks": 0,
@@ -53,6 +71,29 @@ class ReviewAggregator:
                     if hasattr(scheduler_meta, "to_dict")
                     else scheduler_meta
                 )
+
+            rate_only = (
+                bool(skipped)
+                and not (unreviewable or [])
+                and all(_is_rate_limit_skip(s.reason) for s in skipped)
+            )
+            if rate_only:
+                return ReviewResult(
+                    summary=(
+                        "Review deferred — free-tier provider rate limits were hit before "
+                        "any chunk could be reviewed. This is not a code-quality score."
+                    ),
+                    issues=[],
+                    recommendations=[
+                        "Wait a few minutes for RPM quotas to recover, then comment `/sorge` again",
+                    ],
+                    score=0.0,
+                    latency_ms=0.0,
+                    model="none",
+                    review_type="rate_limited",
+                    routing_meta=meta,
+                )
+
             if issues:
                 return ReviewResult(
                     summary="Partial review — some files could not be processed.",
@@ -128,14 +169,7 @@ class ReviewAggregator:
             )
 
         for skip in skipped or []:
-            all_issues.append(
-                ReviewIssue(
-                    severity="low",
-                    file=skip.chunk.files[0] if skip.chunk.files else None,
-                    message=f"Chunk skipped by scheduler: {skip.reason}",
-                    suggestion="Re-run /sorge when provider rate limits recover",
-                )
-            )
+            all_issues.append(_skip_issue(skip))
 
         score = weight_score / weight_sum if weight_sum else 7.0
         summary = (

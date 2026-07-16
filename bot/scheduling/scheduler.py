@@ -17,6 +17,7 @@ from bot.scheduling.priority import prioritize_chunk, sort_key
 from bot.scheduling.run_context import ProviderRuntime, RunContext
 from bot.scheduling.token_bucket import TokenBucket
 from bot.scheduling.types import (
+    MAX_RATE_LIMIT_ROUNDS,
     ProviderResult,
     SchedulerMeta,
     ScheduledChunk,
@@ -142,7 +143,12 @@ class ReviewScheduler:
 
             if not batch:
                 wait = self._min_wake_sec()
-                if wait is None or wait > self.ctx.remaining_sec():
+                remaining = self.ctx.remaining_sec()
+                # Prefer waiting out cooldowns over skipping when wall-clock remains.
+                # Retry-After / history cool can exceed remaining; still use what we have.
+                if wait is not None and wait > remaining:
+                    wait = remaining - 5.0 if remaining >= 15.0 else None
+                if wait is None or wait <= 0:
                     for s in still_waiting:
                         skipped.append(
                             SkipRecord(
@@ -201,6 +207,20 @@ class ReviewScheduler:
                             latency_ms=outcome.latency_ms,
                         )
                         if self._has_untried_eligible(scheduled):
+                            still_waiting.append(scheduled)
+                        elif (
+                            outcome.is_rate_limited
+                            and scheduled.rate_limit_rounds < MAX_RATE_LIMIT_ROUNDS
+                            and self.ctx.remaining_sec() > 20
+                        ):
+                            # All tried providers 429'd — cool down and retry once.
+                            scheduled.rate_limit_rounds += 1
+                            scheduled.attempted_providers.clear()
+                            logger.info(
+                                f"Chunk rate-limited on all tried providers; "
+                                f"requeue round {scheduled.rate_limit_rounds}/"
+                                f"{MAX_RATE_LIMIT_ROUNDS}"
+                            )
                             still_waiting.append(scheduled)
                         else:
                             skipped.append(
@@ -326,16 +346,27 @@ class ReviewScheduler:
         return self._pick_provider(probe) is not None
 
     def _min_wake_sec(self) -> float | None:
-        """Soonest capacity wake: cooling end or bucket refill for a token."""
+        """Soonest capacity wake: cooling end, health recovery, or bucket refill."""
         waits: list[float] = []
-        for rt in self.ctx.providers.values():
+        threshold = self.ctx.health_threshold
+        for name, rt in self.ctx.providers.items():
             cool = rt.health.cooling_remaining()
             if cool > 0:
                 waits.append(cool)
+            # After 429 penalties, score can sit below threshold with no cool timer.
+            # Wait for natural recovery instead of skipping as "providers_exhausted".
+            if rt.health.score < threshold:
+                recover = rt.health.seconds_until_score(threshold)
+                if recover > 0:
+                    waits.append(recover)
             if rt.bucket.remaining() < 1.0:
                 refill = rt.bucket.time_until(1.0)
                 if refill != float("inf"):
                     waits.append(refill)
+            if isinstance(self.ctx.history, ProviderHistory):
+                hist_cool = self.ctx.history.cooling_remaining(name)
+                if hist_cool > 0:
+                    waits.append(hist_cool)
         return min(waits) if waits else None
 
     def _dispatch(self, scheduled: ScheduledChunk, name: str) -> ProviderResult:

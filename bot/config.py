@@ -131,7 +131,7 @@ class ProviderRuntimeConfig(BaseModel):
 class ProvidersConfig(BaseModel):
     groq: ProviderRuntimeConfig = Field(
         default_factory=lambda: ProviderRuntimeConfig(
-            rpm=30, max_inflight=1, max_context_tokens=4500, quality_prior=0.9, nominal_latency_ms=400
+            rpm=30, max_inflight=1, max_context_tokens=7000, quality_prior=0.9, nominal_latency_ms=400
         )
     )
     openrouter: ProviderRuntimeConfig = Field(
