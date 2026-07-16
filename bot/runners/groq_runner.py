@@ -90,7 +90,9 @@ class GroqRunner(BaseRunner):
 
         logger.debug(f"Calling Groq with model: {self.model}")
 
-        response = post_with_retry(self.endpoint, json=payload, headers=headers, timeout=120)
+        response = post_with_retry(
+            self.endpoint, json=payload, headers=headers, timeout=120, max_retries=1
+        )
         latency_ms = (time.time() - start_time) * 1000
 
         data = response.json()

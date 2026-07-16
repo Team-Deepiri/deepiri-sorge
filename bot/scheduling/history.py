@@ -2,12 +2,16 @@
 
 Stores a small fixed-cardinality scoreboard under ~/.cache/sorge/provider_stats.json.
 Keys are provider × size_bucket × language — never an unbounded event log.
+
+Also tracks cross-run provider cooldowns after 429 so the next Actions job
+does not immediately peck a hot free-tier endpoint.
 """
 
 from __future__ import annotations
 
 import json
 import threading
+import time
 from pathlib import Path
 
 from loguru import logger
@@ -16,6 +20,7 @@ from bot.file_splitter import ReviewChunk
 
 DEFAULT_PATH = Path.home() / ".cache" / "sorge" / "provider_stats.json"
 EMA_ALPHA = 0.3
+DEFAULT_COOLDOWN_SEC = 90.0
 
 _EXT_LANG = {
     ".py": "py",
@@ -84,28 +89,68 @@ class ProviderHistory:
         self.alpha = alpha
         self._lock = threading.Lock()
         self._stats: dict[str, dict] = {}
+        self._cooldowns: dict[str, float] = {}  # provider -> unix ts until
         self.load()
 
     def load(self) -> None:
         with self._lock:
             if not self.path.exists():
                 self._stats = {}
+                self._cooldowns = {}
                 return
             try:
                 data = json.loads(self.path.read_text())
-                self._stats = data.get("stats", data) if isinstance(data, dict) else {}
+                if not isinstance(data, dict):
+                    self._stats = {}
+                    self._cooldowns = {}
+                    return
+                if "stats" in data:
+                    self._stats = data.get("stats") or {}
+                    self._cooldowns = {
+                        k: float(v) for k, v in (data.get("cooldowns") or {}).items()
+                    }
+                else:
+                    # Legacy: whole file was the stats map
+                    self._stats = data
+                    self._cooldowns = {}
             except Exception as exc:
                 logger.warning(f"provider history load failed: {exc}")
                 self._stats = {}
+                self._cooldowns = {}
 
     def save(self) -> None:
         with self._lock:
             try:
                 self.path.parent.mkdir(parents=True, exist_ok=True)
-                payload = {"version": 1, "stats": self._stats}
+                # Drop expired cooldowns
+                now = time.time()
+                cool = {k: v for k, v in self._cooldowns.items() if v > now}
+                self._cooldowns = cool
+                payload = {"version": 2, "stats": self._stats, "cooldowns": cool}
                 self.path.write_text(json.dumps(payload, indent=2, sort_keys=True))
             except Exception as exc:
                 logger.warning(f"provider history save failed: {exc}")
+
+    def mark_rate_limited(
+        self,
+        provider: str,
+        *,
+        retry_after: float | None = None,
+    ) -> None:
+        wait = retry_after if retry_after is not None else DEFAULT_COOLDOWN_SEC
+        wait = min(max(float(wait), 15.0), 300.0)
+        until = time.time() + wait
+        with self._lock:
+            prev = self._cooldowns.get(provider, 0.0)
+            self._cooldowns[provider] = max(prev, until)
+        logger.info(f"Provider history: {provider} cooled for {wait:.0f}s (cross-run)")
+
+    def cooling_remaining(self, provider: str) -> float:
+        with self._lock:
+            return max(0.0, self._cooldowns.get(provider, 0.0) - time.time())
+
+    def is_cooling(self, provider: str) -> bool:
+        return self.cooling_remaining(provider) > 0.0
 
     def quality(
         self,
@@ -121,7 +166,6 @@ class ProviderHistory:
             if not row or row.get("n", 0) < 1:
                 return default
             success = float(row.get("ema_success", default))
-            # Mild latency penalty: >2s → lower quality
             lat = float(row.get("ema_latency_ms", 800.0))
             lat_factor = max(0.0, min(1.0, 1.0 - (lat / 4000.0)))
             return max(0.0, min(1.0, 0.75 * success + 0.25 * lat_factor))

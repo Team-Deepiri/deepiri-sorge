@@ -297,6 +297,8 @@ class ReviewScheduler:
                 continue
             if not self.ctx.quota.can_use(name):
                 continue
+            if isinstance(self.ctx.history, ProviderHistory) and self.ctx.history.is_cooling(name):
+                continue
             hist_q = status.quality_prior
             if isinstance(self.ctx.history, ProviderHistory):
                 hist_q = self.ctx.history.quality(
@@ -376,6 +378,8 @@ class ReviewScheduler:
         elif outcome.is_rate_limited:
             rt.health.record_rate_limit(outcome.retry_after)
             self.ctx.quota.record_failure(name)
+            if isinstance(self.ctx.history, ProviderHistory):
+                self.ctx.history.mark_rate_limited(name, retry_after=outcome.retry_after)
         elif outcome.is_payload_too_large:
             rt.health.record_payload_too_large()
             # Shrink effective window so market score skips this provider for similar chunks
