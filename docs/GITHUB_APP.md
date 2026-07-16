@@ -85,3 +85,12 @@ Comment on any PR:
 The GitHub App receives an `issue_comment` webhook, the Worker checks for `/sorge`, and dispatches the same central review workflow. Slash-command-triggered runs pass `--force` so small/docs-only filters do not skip the review.
 
 If your App bot login is not `sorge`, set `SORGE_BOT_LOGIN` on the Worker (e.g. `deepiri-sorge`).
+## Escalate multiplex + drain (Gemini RPD)
+
+Same-PR escalates are batched into **one** Gemini call. If Gemini is unavailable, tickets go to a ledger and **drain** mode upgrades them later:
+
+- `repository_dispatch` type `sorge-drain`
+- hourly Actions `schedule` backup
+- Worker cron when `SORGE_DRAIN_INSTALLATION_ID` (+ optional KV ledger) are configured
+
+Optional Actions secrets: `SORGE_LEDGER_URL`, `SORGE_LEDGER_SECRET`. Without them, `~/.cache/sorge/escalate_ledger.json` + Actions cache still works for same-day drains.

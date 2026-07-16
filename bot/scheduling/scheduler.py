@@ -30,6 +30,12 @@ from bot.scheduling.market_score import (
 from bot.scheduling.priority import prioritize_chunk, sort_key
 from bot.scheduling.run_context import ProviderRuntime, RunContext
 from bot.scheduling.token_bucket import TokenBucket
+from bot.escalate_ledger import EscalateLedger
+from bot.scheduling.escalate import (
+    EscalateTicket,
+    new_ticket_id,
+    truncate_diff,
+)
 from bot.scheduling.types import (
     ESCALATE_SCORE_THRESHOLD,
     MAX_RATE_LIMIT_ROUNDS,
@@ -65,6 +71,10 @@ class ReviewScheduler:
         repo_context: str | None = None,
         context_fingerprint: str = "",
         prompt_overhead_tokens: int = 0,
+        repo: str = "",
+        pr_number: int = 0,
+        installation_id: int | None = None,
+        head_sha: str = "",
     ) -> "ReviewScheduler":
         deadline = time.monotonic() + float(config.scheduler.wall_clock_sec)
         runtimes: dict[str, ProviderRuntime] = {}
@@ -95,6 +105,10 @@ class ReviewScheduler:
             cache_ttl_hours=int(cache_cfg.ttl_hours) if cache_cfg else 24,
             history=history,
             prompt_overhead_tokens=overhead,
+            repo=repo or "",
+            pr_number=int(pr_number or 0),
+            installation_id=installation_id,
+            head_sha=head_sha or "",
         )
         logger.info(
             f"Provider history loaded ({len(getattr(history, '_stats', {}))} keys); "
@@ -119,6 +133,7 @@ class ReviewScheduler:
 
         results: list[ReviewResult] = []
         skipped: list[SkipRecord] = []
+        pending_escalates: list[tuple[ScheduledChunk, ReviewResult, str]] = []
 
         while queue and self.ctx.alive():
             still_waiting: list[ScheduledChunk] = []
@@ -230,31 +245,14 @@ class ReviewScheduler:
 
                         final = outcome.result
                         if self._needs_escalate(scheduled, name, final):
-                            if self._can_escalate_now():
-                                escalated = self._escalate_to_gemini(scheduled)
-                                if escalated is not None:
-                                    final = escalated
-                                    scheduled.escalated = True
-                                    self.meta.escalations += 1
-                                elif self._is_vacuous_review(scheduled, final):
-                                    final = self._soften_incomplete_triage(final)
-                                    self.meta.escalation_blocked += 1
-                            elif self._is_vacuous_review(scheduled, final):
-                                # Wait briefly if Gemini is only cooling (not quota-dead).
-                                waited = self._wait_for_gemini_escalate(max_wait=45.0)
-                                if waited and self._can_escalate_now():
-                                    escalated = self._escalate_to_gemini(scheduled)
-                                    if escalated is not None:
-                                        final = escalated
-                                        scheduled.escalated = True
-                                        self.meta.escalations += 1
-                                    else:
-                                        final = self._soften_incomplete_triage(final)
-                                        self.meta.escalation_blocked += 1
-                                else:
-                                    final = self._soften_incomplete_triage(final)
-                                    self.meta.escalation_blocked += 1
-                        results.append(final)
+                            reason = self._escalate_reason(scheduled, final)
+                            pending_escalates.append((scheduled, final, reason))
+                            logger.info(
+                                f"Queued escalate ticket reason={reason} "
+                                f"(defer multiplex; tokens={scheduled.chunk.estimated_tokens})"
+                            )
+                        else:
+                            results.append(final)
                     else:
                         self._record_failure(name, outcome, scheduled)
                         self._record_history(
@@ -288,6 +286,9 @@ class ReviewScheduler:
 
             still_waiting.sort(key=sort_key)
             queue = still_waiting
+
+        if pending_escalates:
+            results.extend(self._flush_pending_escalates(pending_escalates))
 
         if queue and not self.ctx.alive():
             self.meta.stop_reason = "deadline"
@@ -340,6 +341,148 @@ class ReviewScheduler:
         if max_tokens is not None:
             meta["max_tokens"] = max_tokens
         return meta
+
+    def _escalate_reason(self, scheduled: ScheduledChunk, result: ReviewResult) -> str:
+        if is_security_sensitive(scheduled.chunk):
+            return "security"
+        if is_high_complexity(scheduled.complexity):
+            return "complexity"
+        if self._is_vacuous_review(scheduled, result):
+            return "vacuous"
+        if result.score < ESCALATE_SCORE_THRESHOLD:
+            return "low_score"
+        if scheduled.chunk.estimated_tokens >= 2500 and not result.issues:
+            return "empty_large"
+        return "escalate"
+
+    def _ticket_from_pending(
+        self,
+        scheduled: ScheduledChunk,
+        groq_result: ReviewResult,
+        reason: str,
+    ) -> EscalateTicket:
+        issues = [
+            {
+                "severity": i.severity,
+                "file": i.file,
+                "line": i.line,
+                "message": i.message,
+                "rule": i.rule,
+                "suggestion": i.suggestion,
+            }
+            for i in (groq_result.issues or [])
+        ]
+        return EscalateTicket(
+            ticket_id=new_ticket_id(),
+            reason=reason,
+            files=list(scheduled.chunk.files or []),
+            estimated_tokens=scheduled.chunk.estimated_tokens,
+            complexity=scheduled.complexity,
+            priority=scheduled.priority,
+            groq_summary=groq_result.summary or "",
+            groq_score=float(groq_result.score),
+            groq_issues=issues,
+            contested_diff=truncate_diff(scheduled.chunk.parsed_diff.raw or ""),
+            repo=self.ctx.repo,
+            pr_number=self.ctx.pr_number,
+            installation_id=self.ctx.installation_id,
+            head_sha=self.ctx.head_sha,
+        )
+
+    def _flush_pending_escalates(
+        self,
+        pending: list[tuple[ScheduledChunk, ReviewResult, str]],
+    ) -> list[ReviewResult]:
+        """One Gemini multiplex call for all pending tickets; else ledger + soften."""
+        if not pending:
+            return []
+
+        tickets = [
+            self._ticket_from_pending(sched, groq, reason)
+            for sched, groq, reason in pending
+        ]
+        self.meta.escalate_multiplex_tickets = len(tickets)
+
+        if not self._can_escalate_now():
+            waited = self._wait_for_gemini_escalate(max_wait=45.0)
+            if not waited:
+                return self._defer_or_soften(pending, tickets)
+
+        upgraded = self._multiplex_escalate(tickets)
+        if not upgraded:
+            return self._defer_or_soften(pending, tickets)
+
+        out: list[ReviewResult] = []
+        for (scheduled, groq, _reason), ticket in zip(pending, tickets):
+            result = upgraded.get(ticket.ticket_id)
+            if result is not None:
+                scheduled.escalated = True
+                self.meta.escalations += 1
+                self._store_cache(scheduled, result)
+                out.append(result)
+            else:
+                # Partial multiplex miss → soften that ticket's Groq triage
+                out.append(self._soften_incomplete_triage(groq))
+                self.meta.escalation_blocked += 1
+        meta = {
+            "provider": "gemini",
+            "escalation": True,
+            "multiplex": True,
+            "tickets": len(tickets),
+            "resolved": len(upgraded),
+            "ok": True,
+            "status": 200,
+        }
+        self.meta.provider_picks.append(meta)
+        return out
+
+    def _defer_or_soften(
+        self,
+        pending: list[tuple[ScheduledChunk, ReviewResult, str]],
+        tickets: list[EscalateTicket],
+    ) -> list[ReviewResult]:
+        """Enqueue for drain when possible; always return softened provisionals."""
+        ledger = EscalateLedger()
+        try:
+            if self.ctx.repo and self.ctx.pr_number:
+                ledger.cancel_pr(self.ctx.repo, self.ctx.pr_number)
+            n = ledger.enqueue(tickets)
+            self.meta.escalate_ledger_enqueued = n
+            logger.info(f"Escalate deferred to ledger ({n} ticket(s))")
+        except Exception as e:
+            logger.warning(f"Escalate ledger enqueue failed: {e}")
+        out = []
+        for _sched, groq, _reason in pending:
+            out.append(self._soften_incomplete_triage(groq))
+            self.meta.escalation_blocked += 1
+        return out
+
+    def _multiplex_escalate(self, tickets: list[EscalateTicket]) -> dict[str, ReviewResult]:
+        if "gemini" not in self.providers:
+            return {}
+        if not self.ctx.try_acquire("gemini"):
+            return {}
+        try:
+            provider = self.providers["gemini"]
+            runner = getattr(provider, "_runner", None)
+            if runner is None or not hasattr(runner, "review_escalate_batch"):
+                # Fallback: single-ticket full escalate via first chunk only
+                logger.warning("Gemini runner missing review_escalate_batch; skip multiplex")
+                return {}
+            logger.info(f"Gemini multiplex escalate for {len(tickets)} ticket(s)")
+            upgraded = runner.review_escalate_batch(tickets)
+            self.meta.dispatches += 1
+            if upgraded:
+                # Approximate latency from first result
+                sample = next(iter(upgraded.values()))
+                self._record_success("gemini", sample.latency_ms)
+                self.ctx.quota.record("gemini")
+                if isinstance(self.ctx.history, ProviderHistory):
+                    # Record one success against a synthetic small chunk key
+                    pass
+            return upgraded
+        finally:
+            self.ctx.release("gemini")
 
     @staticmethod
     def _is_vacuous_review(scheduled: ScheduledChunk, result: ReviewResult) -> bool:
@@ -397,8 +540,8 @@ class ReviewScheduler:
         else:
             result.parse_warning = warning
         note = (
-            "Deep review (Gemini) was unavailable after a thin Groq triage; "
-            "re-run `/sorge` when free-tier limits recover for a fuller pass."
+            "Deep review (Gemini) was deferred — provisional Groq triage only; "
+            "re-run `/sorge` or wait for escalate drain when free-tier recovers."
         )
         recs = list(result.recommendations or [])
         if note not in recs:

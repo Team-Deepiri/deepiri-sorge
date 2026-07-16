@@ -76,6 +76,8 @@ class SchedulerMeta:
     health_snapshot: dict[str, float] = field(default_factory=dict)
     escalations: int = 0
     escalation_blocked: int = 0
+    escalate_multiplex_tickets: int = 0
+    escalate_ledger_enqueued: int = 0
     avg_complexity: float | None = None
     retry_after_sec: float | None = None
 
@@ -90,6 +92,8 @@ class SchedulerMeta:
             "health": self.health_snapshot,
             "escalations": self.escalations,
             "escalation_blocked": self.escalation_blocked,
+            "escalate_multiplex_tickets": self.escalate_multiplex_tickets,
+            "escalate_ledger_enqueued": self.escalate_ledger_enqueued,
             "avg_complexity": self.avg_complexity,
             "retry_after_sec": self.retry_after_sec,
         }
