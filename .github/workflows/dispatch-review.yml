@@ -128,17 +128,63 @@ jobs:
           echo "Installation ID token action reports: '${{ steps.app-token.outputs.installation-id }}'"
           echo "Repo we're posting to: '${{ steps.inputs.outputs.REPO }}'"
 
+      # Per-run hybrid: always POST a new Starting… comment (unless auto-retry
+      # reuses the rate-limit comment from the prior attempt). The review step
+      # edits that same comment_id into the final body — never older runs.
       - name: Post starting message
+        id: starting
         if: steps.inputs.outputs.MODE == 'review'
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ steps.inputs.outputs.REPO }}
+          PR_NUMBER: ${{ steps.inputs.outputs.PR_NUMBER }}
+          EXISTING_COMMENT_ID: ${{ github.event.client_payload.comment_id }}
+          AUTO_RETRY: ${{ github.event.client_payload.auto_retry }}
         run: |
-          curl -sS -X POST \
-            -w "\nHTTP_STATUS:%{http_code}\n" \
-            -H "Authorization: Bearer $GITHUB_TOKEN" \
-            -H "Accept: application/vnd.github.v3+json" \
-            "https://api.github.com/repos/${{ steps.inputs.outputs.REPO }}/issues/${{ steps.inputs.outputs.PR_NUMBER }}/comments" \
-            -d '{"body": "Starting AI review..."}'
+          python3 <<'PY'
+          import json, os, urllib.request
+
+          token = os.environ["GITHUB_TOKEN"]
+          repo = os.environ["REPO"]
+          pr = os.environ["PR_NUMBER"]
+          existing = (os.environ.get("EXISTING_COMMENT_ID") or "").strip()
+          auto_retry = (os.environ.get("AUTO_RETRY") or "").lower() == "true"
+          out = os.environ["GITHUB_OUTPUT"]
+
+          if auto_retry and existing.isdigit():
+              with open(out, "a") as f:
+                  f.write(f"COMMENT_ID={existing}\n")
+              print(f"Auto-retry reusing comment_id={existing}")
+              raise SystemExit(0)
+
+          anchor = "<!-- sorge-review-anchor -->"
+          body = (
+              f"{anchor}\n"
+              "## Sorge AI Code Review\n\n"
+              "_Starting AI review…_\n"
+          )
+          api = "https://api.github.com"
+          headers = {
+              "Authorization": f"Bearer {token}",
+              "Accept": "application/vnd.github.v3+json",
+              "X-GitHub-Api-Version": "2022-11-28",
+              "Content-Type": "application/json",
+              "User-Agent": "deepiri-sorge",
+          }
+          data = json.dumps({"body": body}).encode()
+          req = urllib.request.Request(
+              f"{api}/repos/{repo}/issues/{pr}/comments",
+              data=data,
+              headers=headers,
+              method="POST",
+          )
+          with urllib.request.urlopen(req) as resp:
+              created = json.load(resp)
+          cid = created["id"]
+          with open(out, "a") as f:
+              f.write(f"COMMENT_ID={cid}\n")
+          print(f"Posted starting message id={cid}")
+          PY
 
       - name: Checkout sorge
         uses: actions/checkout@v6
@@ -224,6 +270,7 @@ jobs:
           SORGE_LEDGER_URL: ${{ secrets.SORGE_LEDGER_URL }}
           SORGE_LEDGER_SECRET: ${{ secrets.SORGE_LEDGER_SECRET }}
           SORGE_HEAD_SHA: ${{ steps.pr-head.outputs.HEAD_SHA }}
+          SORGE_COMMENT_ID: ${{ steps.starting.outputs.COMMENT_ID }}
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -o pipefail
@@ -237,12 +284,18 @@ jobs:
             CONFIG_FLAG="--config target-repo/sorge.toml"
           fi
 
+          COMMENT_FLAG=""
+          if [ -n "${{ steps.starting.outputs.COMMENT_ID }}" ]; then
+            COMMENT_FLAG="--comment-id ${{ steps.starting.outputs.COMMENT_ID }}"
+          fi
+
           poetry run python -m bot.main \
             --repo "${{ steps.inputs.outputs.REPO }}" \
             --pr-number "${{ steps.inputs.outputs.PR_NUMBER }}" \
             --repo-root target-repo \
             $INSTALL_FLAG \
             $CONFIG_FLAG \
+            $COMMENT_FLAG \
             ${{ steps.inputs.outputs.FORCE_FLAG }} \
             ${{ steps.inputs.outputs.AUTO_RETRY_FLAG }} \
             --mode auto \

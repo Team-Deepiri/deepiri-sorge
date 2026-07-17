@@ -45,18 +45,20 @@ class CommentPoster:
         edit_existing: bool = True,
         preferred_comment_id: int | None = None,
     ) -> int | None:
-        """Post or edit the anchored Sorge review comment. Returns comment id on success.
+        """Post a review comment, or edit this run's provisional comment.
 
-        Defaults to upsert so repeated `/sorge` runs (and rate-limit deferrals) edit
-        the same comment instead of stacking duplicates.
+        Per-run hybrid: each `/sorge` gets a new comment. Within a run we edit
+        ``preferred_comment_id`` (Starting… → final). We never rewrite an older
+        run's review via ``get_previous_review``.
         """
         comment_body = self._format_review_comment(review)
-        if edit_existing:
+        if edit_existing and preferred_comment_id is not None:
             return self.upsert_comment(
                 repo,
                 pr_number,
                 comment_body,
                 preferred_comment_id=preferred_comment_id,
+                reuse_previous=False,
             )
         return self.post_comment(repo, pr_number, comment_body)
 
@@ -108,16 +110,24 @@ class CommentPoster:
         body: str,
         *,
         preferred_comment_id: int | None = None,
+        reuse_previous: bool = False,
     ) -> int | None:
-        """Edit a known/latest Sorge review comment if present; otherwise post new."""
+        """Edit a known comment if present; otherwise post new.
+
+        ``preferred_comment_id`` is this run's provisional (Starting…) comment.
+        ``reuse_previous`` (default False) may also edit the latest anchored
+        Sorge comment on the PR — avoid for normal `/sorge` so prior runs stay
+        as history.
+        """
         if SORGE_COMMENT_ANCHOR not in body and "Sorge AI Code Review" in body:
             body = f"{SORGE_COMMENT_ANCHOR}\n{body}"
         candidates: list[int] = []
         if preferred_comment_id is not None:
             candidates.append(int(preferred_comment_id))
-        existing = self.get_previous_review(repo, pr_number)
-        if existing is not None and existing not in candidates:
-            candidates.append(existing)
+        if reuse_previous:
+            existing = self.get_previous_review(repo, pr_number)
+            if existing is not None and existing not in candidates:
+                candidates.append(existing)
         for cid in candidates:
             if self.update_comment(repo, cid, body):
                 logger.info(f"Edited Sorge review comment {cid} on {repo}#{pr_number}")

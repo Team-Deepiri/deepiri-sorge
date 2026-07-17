@@ -388,6 +388,7 @@ async function flushDueRetries(env) {
       trigger: "auto_retry",
       force: true,
       auto_retry: true,
+      comment_id: r.comment_id || null,
     });
     results.push({ repo: r.repo, pr: r.pr_number, ...out });
   }
