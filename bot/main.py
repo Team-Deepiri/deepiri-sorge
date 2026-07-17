@@ -58,6 +58,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Run review even when filters would skip (e.g. /sorge command)",
     )
+    parser.add_argument(
+        "--auto-retry",
+        action="store_true",
+        help="This run is a Worker-scheduled retry; do not enqueue another retry",
+    )
     return parser.parse_args()
 
 
@@ -331,6 +336,45 @@ def main() -> None:
                     )
             except Exception as e:
                 logger.debug(f"Ledger attach_comment skipped: {e}")
+
+        # One automatic delayed retry after capacity defer (not on the retry itself).
+        if (
+            review_result
+            and getattr(review_result, "review_type", "") == "rate_limited"
+            and not args.auto_retry
+        ):
+            import random
+
+            delay = random.randint(
+                int(getattr(config.scheduler, "auto_retry_delay_min_sec", 60) or 60),
+                int(getattr(config.scheduler, "auto_retry_delay_max_sec", 120) or 120),
+            )
+            try:
+                from bot.escalate_ledger import EscalateLedger
+
+                ok = EscalateLedger().schedule_review_retry(
+                    repo=args.repo,
+                    pr_number=args.pr_number,
+                    installation_id=args.installation_id,
+                    delay_sec=delay,
+                    comment_id=comment_id,
+                )
+                if ok and review_result.recommendations is not None:
+                    note = (
+                        f"Sorge will automatically retry once in ~{delay}s "
+                        "(no need to re-comment `/sorge`)."
+                    )
+                    if note not in review_result.recommendations:
+                        review_result.recommendations.insert(0, note)
+                    # Refresh comment so the user sees the auto-retry note.
+                    CommentPoster(github_token).post_review(
+                        repo=args.repo,
+                        pr_number=args.pr_number,
+                        review=review_result,
+                        preferred_comment_id=comment_id,
+                    )
+            except Exception as e:
+                logger.warning(f"Auto-retry enqueue failed: {e}")
 
     print(json.dumps(review_result.to_dict(), indent=2))
 

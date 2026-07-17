@@ -418,3 +418,62 @@ def test_desired_workers_tracks_inflight_slots():
     sch = ReviewScheduler([P("groq"), P("gemini")], run, max_workers=4)
     # groq has 1 free slot + gemini 1 = 2
     assert sch._desired_workers() == 2
+
+
+def test_capacity_wait_budget_defers_without_burning_wall_clock():
+    """Long cooldowns should early-defer after max_capacity_wait_sec, not sit for 10m."""
+    from bot.scheduling.run_context import ProviderRuntime, RunContext
+    from bot.scheduling.history import ProviderHistory
+
+    class AlwaysCool:
+        name = "groq"
+        max_context_tokens = 100000
+        cost_tier = "free"
+        nominal_latency_ms = 200
+        quality_prior = 0.9
+
+        def advertise(self, run):
+            return run.status(self.name)
+
+        def review(self, chunk, run):
+            raise AssertionError("should not dispatch while cooling")
+
+    history = ProviderHistory(sync_remote=False)
+    history.mark_rate_limited("groq", retry_after=600)
+
+    quota = QuotaTracker(
+        limits={"gpt": 100, "gemini": 100, "openrouter": 100},
+        used={"gpt": 0, "gemini": 0, "openrouter": 0},
+        sync_remote=False,
+    )
+    run = RunContext(
+        providers={
+            "groq": ProviderRuntime(
+                name="groq",
+                bucket=TokenBucket(30),
+                health=HealthTracker(100),
+                max_context_tokens=100000,
+                max_inflight=1,
+                nominal_latency_ms=200,
+                quality_prior=0.9,
+            ),
+        },
+        quota=quota,
+        deadline=time.monotonic() + 600,
+        history=history,
+        max_capacity_wait_sec=25.0,
+    )
+    # Pretend we already waited most of the budget.
+    run.capacity_waited_sec = 22.0
+
+    sch = ReviewScheduler([AlwaysCool()], run, max_workers=1)
+    chunk = ReviewChunk(
+        files=["a.py"],
+        parsed_diff=ParsedDiff(raw="+x\n"),
+        estimated_tokens=100,
+    )
+    results, skipped, meta = sch.run([chunk])
+    assert results == []
+    assert skipped
+    assert meta.stop_reason == "providers_exhausted"
+    assert any("capacity_waited" in s.reason or "no eligible" in s.reason for s in skipped)

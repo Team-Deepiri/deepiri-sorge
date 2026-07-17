@@ -207,6 +207,85 @@ class EscalateLedger:
         except requests.RequestException as e:
             logger.warning(f"Ledger provider_status push failed: {e}")
 
+    def acquire_slot(
+        self,
+        provider: str,
+        *,
+        holder_id: str,
+        max_inflight: int = 1,
+        ttl_sec: float = 180.0,
+    ) -> bool:
+        if not self.remote:
+            return True
+        try:
+            r = requests.post(
+                f"{self.base_url}/ledger/slots/acquire",
+                headers=self._headers(),
+                json={
+                    "provider": provider,
+                    "holder_id": holder_id,
+                    "max_inflight": max_inflight,
+                    "ttl_sec": ttl_sec,
+                },
+                timeout=15,
+            )
+            r.raise_for_status()
+            return bool(r.json().get("ok"))
+        except requests.RequestException as e:
+            logger.warning(f"Ledger slot acquire failed ({provider}): {e}")
+            # Fail open — don't block reviews if KV is down.
+            return True
+
+    def release_slot(self, provider: str, *, holder_id: str) -> None:
+        if not self.remote:
+            return
+        try:
+            requests.post(
+                f"{self.base_url}/ledger/slots/release",
+                headers=self._headers(),
+                json={"provider": provider, "holder_id": holder_id},
+                timeout=15,
+            ).raise_for_status()
+        except requests.RequestException as e:
+            logger.warning(f"Ledger slot release failed ({provider}): {e}")
+
+    def schedule_review_retry(
+        self,
+        *,
+        repo: str,
+        pr_number: int,
+        installation_id: int | None,
+        delay_sec: float,
+        comment_id: int | None = None,
+    ) -> bool:
+        """Enqueue one delayed sorge-review (Worker cron fires when due)."""
+        if not self.remote:
+            logger.info("Auto-retry skipped: ledger remote not configured")
+            return False
+        not_before = time.time() + max(30.0, float(delay_sec))
+        try:
+            r = requests.post(
+                f"{self.base_url}/ledger/retries",
+                headers=self._headers(),
+                json={
+                    "repo": repo,
+                    "pr_number": pr_number,
+                    "installation_id": installation_id,
+                    "not_before": not_before,
+                    "comment_id": comment_id,
+                },
+                timeout=20,
+            )
+            r.raise_for_status()
+            logger.info(
+                f"Auto-retry scheduled for {repo}#{pr_number} "
+                f"in ~{delay_sec:.0f}s (not_before={not_before:.0f})"
+            )
+            return True
+        except requests.RequestException as e:
+            logger.warning(f"Auto-retry schedule failed: {e}")
+            return False
+
     # --- remote ---
 
     def _enqueue_remote(self, tickets: list[EscalateTicket]) -> int:

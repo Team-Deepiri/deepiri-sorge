@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 
 from bot.quota_tracker import QuotaTracker
 from bot.scheduling.health import HealthTracker
+from bot.scheduling.semaphore import ProviderSemaphore
 from bot.scheduling.token_bucket import TokenBucket
 from bot.scheduling.types import ProviderStatus
 
@@ -43,12 +44,19 @@ class RunContext:
     pr_number: int = 0
     installation_id: int | None = None
     head_sha: str = ""
+    # Soft cap on time spent sleeping for capacity (not too early; default 120s).
+    max_capacity_wait_sec: float = 120.0
+    capacity_waited_sec: float = 0.0
+    semaphore: ProviderSemaphore | None = None
 
     def alive(self) -> bool:
         return time.monotonic() < self.deadline
 
     def remaining_sec(self) -> float:
         return max(0.0, self.deadline - time.monotonic())
+
+    def capacity_budget_remaining(self) -> float:
+        return max(0.0, self.max_capacity_wait_sec - self.capacity_waited_sec)
 
     def status(self, name: str) -> ProviderStatus | None:
         rt = self.providers.get(name)
@@ -79,7 +87,24 @@ class RunContext:
                 return False
             if not self.quota.can_use(name):
                 return False
+            # Peek local RPM without consuming yet.
+            if rt.bucket.remaining() < 1.0:
+                return False
+        # Cross-run KV semaphore outside local lock (network I/O).
+        if self.semaphore is not None:
+            if not self.semaphore.try_acquire(
+                name, max_inflight=rt.max_inflight, ttl_sec=180.0
+            ):
+                return False
+        with rt.lock:
+            # Re-check after remote acquire.
+            if rt.in_flight >= rt.max_inflight:
+                if self.semaphore is not None:
+                    self.semaphore.release(name)
+                return False
             if not rt.bucket.try_consume(1.0):
+                if self.semaphore is not None:
+                    self.semaphore.release(name)
                 return False
             rt.in_flight += 1
             return True
@@ -90,3 +115,5 @@ class RunContext:
             return
         with rt.lock:
             rt.in_flight = max(0, rt.in_flight - 1)
+        if self.semaphore is not None:
+            self.semaphore.release(name)

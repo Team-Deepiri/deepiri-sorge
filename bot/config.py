@@ -153,6 +153,19 @@ class SchedulerConfig(BaseModel):
     partial_on_exhausted: bool = Field(
         default=True, description="Return partial review when providers are exhausted"
     )
+    max_capacity_wait_sec: float = Field(
+        default=120.0,
+        description=(
+            "Max seconds spent sleeping for provider cooldowns before early-deferring "
+            "with NO_PROVIDER (still allows attempts/retries within this budget)"
+        ),
+    )
+    auto_retry_delay_min_sec: int = Field(
+        default=60, description="Min delay before one automatic /sorge retry after rate-limit"
+    )
+    auto_retry_delay_max_sec: int = Field(
+        default=120, description="Max delay before one automatic /sorge retry after rate-limit"
+    )
 
 
 class Config(BaseModel):
