@@ -172,6 +172,12 @@ class ReviewScheduler:
                     continue
                 pick, pick_score = self._pick_provider_scored(scheduled)
                 if pick is None:
+                    # Soft reserve blocked every fit — spend the last free-tier
+                    # slot rather than parking on a cooling OpenRouter/Groq.
+                    pick, pick_score = self._pick_provider_scored(
+                        scheduled, respect_soft_reserve=False
+                    )
+                if pick is None:
                     still_waiting.append(scheduled)
                     continue
                 if not self.ctx.try_acquire(pick):
@@ -726,9 +732,18 @@ class ReviewScheduler:
 
     def _pick_provider(self, scheduled: ScheduledChunk) -> str | None:
         name, _ = self._pick_provider_scored(scheduled)
+        if name is None:
+            name, _ = self._pick_provider_scored(
+                scheduled, respect_soft_reserve=False
+            )
         return name
 
-    def _pick_provider_scored(self, scheduled: ScheduledChunk) -> tuple[str | None, float]:
+    def _pick_provider_scored(
+        self,
+        scheduled: ScheduledChunk,
+        *,
+        respect_soft_reserve: bool = True,
+    ) -> tuple[str | None, float]:
         best_name: str | None = None
         best_score = 0.0
         for name, provider in self.providers.items():
@@ -745,7 +760,9 @@ class ReviewScheduler:
                 continue
             if status.rpm_remaining < 1.0:
                 continue
-            if not self.ctx.quota.can_use(name):
+            if not self.ctx.quota.can_use(
+                name, respect_soft_reserve=respect_soft_reserve
+            ):
                 continue
             if isinstance(self.ctx.history, ProviderHistory) and self.ctx.history.is_cooling(name):
                 continue
