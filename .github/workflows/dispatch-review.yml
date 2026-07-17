@@ -128,17 +128,72 @@ jobs:
           echo "Installation ID token action reports: '${{ steps.app-token.outputs.installation-id }}'"
           echo "Repo we're posting to: '${{ steps.inputs.outputs.REPO }}'"
 
+      # Upsert into the same anchored comment the review will edit later.
+      # A plain POST left orphan "Starting AI review..." at the bottom while the
+      # real review updated an older mid-thread comment — looked permanently stuck.
       - name: Post starting message
         if: steps.inputs.outputs.MODE == 'review'
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ steps.inputs.outputs.REPO }}
+          PR_NUMBER: ${{ steps.inputs.outputs.PR_NUMBER }}
         run: |
-          curl -sS -X POST \
-            -w "\nHTTP_STATUS:%{http_code}\n" \
-            -H "Authorization: Bearer $GITHUB_TOKEN" \
-            -H "Accept: application/vnd.github.v3+json" \
-            "https://api.github.com/repos/${{ steps.inputs.outputs.REPO }}/issues/${{ steps.inputs.outputs.PR_NUMBER }}/comments" \
-            -d '{"body": "Starting AI review..."}'
+          python3 <<'PY'
+          import json, os, urllib.request
+
+          token = os.environ["GITHUB_TOKEN"]
+          repo = os.environ["REPO"]
+          pr = os.environ["PR_NUMBER"]
+          anchor = "<!-- sorge-review-anchor -->"
+          body = (
+              f"{anchor}\n"
+              "## Sorge AI Code Review\n\n"
+              "_Starting AI review…_\n"
+          )
+          api = "https://api.github.com"
+          headers = {
+              "Authorization": f"Bearer {token}",
+              "Accept": "application/vnd.github.v3+json",
+              "X-GitHub-Api-Version": "2022-11-28",
+              "Content-Type": "application/json",
+              "User-Agent": "deepiri-sorge",
+          }
+
+          def req(method, url, payload=None):
+              data = None if payload is None else json.dumps(payload).encode()
+              r = urllib.request.Request(url, data=data, headers=headers, method=method)
+              with urllib.request.urlopen(r) as resp:
+                  return resp.status, json.load(resp)
+
+          comments = []
+          page = 1
+          while True:
+              url = f"{api}/repos/{repo}/issues/{pr}/comments?per_page=100&page={page}"
+              _, batch = req("GET", url)
+              if not batch:
+                  break
+              comments.extend(batch)
+              if len(batch) < 100:
+                  break
+              page += 1
+
+          existing = None
+          for c in reversed(comments):
+              if anchor in (c.get("body") or ""):
+                  existing = c["id"]
+                  break
+
+          if existing is not None:
+              status, _ = req("PATCH", f"{api}/repos/{repo}/issues/comments/{existing}", {"body": body})
+              print(f"Updated starting message on comment {existing} HTTP {status}")
+          else:
+              status, created = req(
+                  "POST",
+                  f"{api}/repos/{repo}/issues/{pr}/comments",
+                  {"body": body},
+              )
+              print(f"Posted starting message id={created.get('id')} HTTP {status}")
+          PY
 
       - name: Checkout sorge
         uses: actions/checkout@v6
