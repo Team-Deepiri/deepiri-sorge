@@ -141,10 +141,20 @@ class QuotaTracker:
         key = self.PROVIDER_KEYS.get(provider, provider)
         return max(0, self.limits.get(key, 0) - self.used.get(key, 0))
 
-    def can_use(self, provider: str) -> bool:
-        """True when remaining > soft reserve (keep 1 free-tier call as buffer)."""
+    def can_use(self, provider: str, *, respect_soft_reserve: bool = True) -> bool:
+        """True when a call is allowed.
+
+        Soft reserve (default): keep the last Gemini/OpenRouter daily slot as a
+        buffer so pecking does not burn the free-tier floor. Pass
+        ``respect_soft_reserve=False`` for last-resort picks when no other
+        provider can take the chunk.
+        """
         key = self.PROVIDER_KEYS.get(provider, provider)
         remaining = self.remaining(provider)
+        if remaining <= 0:
+            return False
+        if not respect_soft_reserve:
+            return True
         soft_reserve = 1 if key in ("gemini", "openrouter") else 0
         return remaining > soft_reserve
 

@@ -17,9 +17,25 @@ def test_can_use_and_record(tmp_path: Path):
     assert q.can_use("gemini")
     q.record("gemini")
     assert q.remaining("gemini") == 1
+    # Soft reserve blocks the last Gemini slot by default.
+    assert not q.can_use("gemini")
+    assert q.can_use("gemini", respect_soft_reserve=False)
     assert path.exists()
     q.record("gemini")
     assert not q.can_use("gemini")
+    assert not q.can_use("gemini", respect_soft_reserve=False)
+
+
+def test_soft_reserve_last_resort(tmp_path: Path):
+    q = QuotaTracker(
+        limits={"gemini": 20, "gpt": 10, "openrouter": 50},
+        used={"gemini": 19, "gpt": 0, "openrouter": 0},
+        persist_path=tmp_path / "quota.json",
+        sync_remote=False,
+    )
+    assert q.remaining("gemini") == 1
+    assert not q.can_use("gemini")
+    assert q.can_use("gemini", respect_soft_reserve=False)
 
 
 def test_from_config(tmp_path: Path):

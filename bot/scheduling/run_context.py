@@ -85,7 +85,7 @@ class RunContext:
                 return False
             if rt.in_flight >= rt.max_inflight:
                 return False
-            if not self.quota.can_use(name):
+            if not self.quota.can_use(name, respect_soft_reserve=False):
                 return False
             # Peek local RPM without consuming yet.
             if rt.bucket.remaining() < 1.0:
