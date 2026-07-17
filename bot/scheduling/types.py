@@ -43,6 +43,7 @@ class ProviderResult:
             for token in (
                 "empty_response",
                 "empty_or_invalid",
+                "non_json",
                 "truncated",
                 "parse_warning",
                 "timeout",

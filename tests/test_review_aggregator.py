@@ -89,3 +89,15 @@ def test_empty_response_after_stampede_is_not_quality_zero():
     assert merged.issues == []
     assert "No automated review was generated" in merged.summary
     assert merged.routing_meta.get("final_state") == "NO_PROVIDER_AVAILABLE"
+
+
+def test_non_json_response_is_not_quality_zero():
+    chunk = ReviewChunk(
+        files=["src/App.tsx"],
+        parsed_diff=ParsedDiff(raw="+x\n"),
+        estimated_tokens=1000,
+    )
+    skipped = [SkipRecord(chunk, "non_json_response")]
+    merged = ReviewAggregator.merge([], rung="scheduled", skipped=skipped)
+    assert merged.review_type == "rate_limited"
+    assert merged.routing_meta.get("final_state") == "NO_PROVIDER_AVAILABLE"
