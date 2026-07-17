@@ -182,11 +182,11 @@ def main() -> None:
 
     github_token = resolve_github_token(args)
 
-    if args.comment_id is None:
+    if getattr(args, "comment_id", None) is None:
         raw_cid = os.getenv("SORGE_COMMENT_ID", "").strip()
         if raw_cid.isdigit():
             args.comment_id = int(raw_cid)
-    if args.comment_id:
+    if getattr(args, "comment_id", None):
         logger.info(f"Using provisional comment_id={args.comment_id} for this run")
 
     if args.repo and args.pr_number and not args.diff:
@@ -276,7 +276,7 @@ def main() -> None:
                     "- API key misconfiguration (check `GOOGLE_API_KEY`, `OPENROUTER_API_KEY`, `GROQ_API_KEY`)\n"
                     "- Rate limits exceeded (check quota settings in `sorge.toml`)\n"
                     "- Network errors reaching the provider APIs\n\n",
-                    preferred_comment_id=args.comment_id,
+                    preferred_comment_id=getattr(args, "comment_id", None),
                     reuse_previous=False,
                 )
             sys.exit(2)
@@ -307,7 +307,7 @@ def main() -> None:
                     f"- `{args.mode}` API key missing or invalid\n"
                     "- Rate limits or quota exhaustion\n"
                     "- Network errors reaching the provider\n\n",
-                    preferred_comment_id=args.comment_id,
+                    preferred_comment_id=getattr(args, "comment_id", None),
                     reuse_previous=False,
                 )
             sys.exit(2)
@@ -339,7 +339,7 @@ def main() -> None:
             repo=args.repo,
             pr_number=args.pr_number,
             review=review_result,
-            preferred_comment_id=args.comment_id,
+            preferred_comment_id=getattr(args, "comment_id", None),
         )
         if comment_id:
             try:
@@ -359,7 +359,7 @@ def main() -> None:
         if (
             review_result
             and getattr(review_result, "review_type", "") == "rate_limited"
-            and not args.auto_retry
+            and not getattr(args, "auto_retry", False)
         ):
             import random
 
