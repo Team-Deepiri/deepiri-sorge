@@ -24,6 +24,7 @@ def _is_capacity_skip(reason: str) -> bool:
             "capacity",
             "empty_response",
             "empty_or_invalid",
+            "non_json",
             "truncated",
             "timeout",
             "retry_in_approx",
