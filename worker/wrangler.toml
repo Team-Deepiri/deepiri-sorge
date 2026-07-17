@@ -7,7 +7,8 @@ binding = "SORGE_LEDGER"
 id = "ec099ecb082d43b89920480c806efe95"
 
 [triggers]
-crons = ["20 * * * *"]
+# Hourly escalate drain backup + every-minute due auto-retries
+crons = ["20 * * * *", "* * * * *"]
 
 [vars]
 # Secrets via wrangler secret put:

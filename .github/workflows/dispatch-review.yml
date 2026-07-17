@@ -75,11 +75,13 @@ jobs:
               PR_NUMBER="${{ github.event.client_payload.pr_number }}"
               echo "INSTALLATION_ID=${{ github.event.client_payload.installation_id }}" >> "$GITHUB_OUTPUT"
               FORCE="${{ github.event.client_payload.force }}"
+              AUTO_RETRY="${{ github.event.client_payload.auto_retry }}"
             else
               FULL_REPO="${{ inputs.repo }}"
               PR_NUMBER="${{ inputs.pr_number }}"
               echo "INSTALLATION_ID=${{ inputs.installation_id }}" >> "$GITHUB_OUTPUT"
               FORCE=""
+              AUTO_RETRY=""
             fi
             if [ -z "$FULL_REPO" ] || [ -z "$PR_NUMBER" ]; then
               echo "Review mode requires repo + pr_number" >&2
@@ -94,6 +96,11 @@ jobs:
             else
               echo "FORCE_FLAG=" >> "$GITHUB_OUTPUT"
             fi
+            if [ "$AUTO_RETRY" = "true" ]; then
+              echo "AUTO_RETRY_FLAG=--auto-retry" >> "$GITHUB_OUTPUT"
+            else
+              echo "AUTO_RETRY_FLAG=" >> "$GITHUB_OUTPUT"
+            fi
           else
             echo "REPO=" >> "$GITHUB_OUTPUT"
             echo "REPO_OWNER=Team-Deepiri" >> "$GITHUB_OUTPUT"
@@ -101,6 +108,7 @@ jobs:
             echo "PR_NUMBER=drain" >> "$GITHUB_OUTPUT"
             echo "INSTALLATION_ID=${{ inputs.installation_id }}" >> "$GITHUB_OUTPUT"
             echo "FORCE_FLAG=" >> "$GITHUB_OUTPUT"
+            echo "AUTO_RETRY_FLAG=" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Generate App installation token
@@ -236,6 +244,7 @@ jobs:
             $INSTALL_FLAG \
             $CONFIG_FLAG \
             ${{ steps.inputs.outputs.FORCE_FLAG }} \
+            ${{ steps.inputs.outputs.AUTO_RETRY_FLAG }} \
             --mode auto \
             --verbose | tee review-output.json
 

@@ -327,6 +327,74 @@ function mergeCooldowns(a, b) {
   return out;
 }
 
+async function loadSlots(env) {
+  if (!env.SORGE_LEDGER) return {};
+  const raw = await env.SORGE_LEDGER.get("provider_slots");
+  if (!raw) return {};
+  try {
+    return JSON.parse(raw) || {};
+  } catch {
+    return {};
+  }
+}
+
+async function saveSlots(env, slots) {
+  if (!env.SORGE_LEDGER) return;
+  await env.SORGE_LEDGER.put("provider_slots", JSON.stringify(slots));
+}
+
+async function loadRetries(env) {
+  if (!env.SORGE_LEDGER) return [];
+  const raw = await env.SORGE_LEDGER.get("review_retries");
+  if (!raw) return [];
+  try {
+    const data = JSON.parse(raw);
+    return Array.isArray(data) ? data : data.retries || [];
+  } catch {
+    return [];
+  }
+}
+
+async function saveRetries(env, retries) {
+  if (!env.SORGE_LEDGER) return;
+  const cutoff = Date.now() / 1000 - 86400;
+  const pruned = retries.filter(
+    (r) => r.status === "pending" || Number(r.created_at || 0) > cutoff,
+  );
+  await env.SORGE_LEDGER.put("review_retries", JSON.stringify(pruned));
+}
+
+async function flushDueRetries(env) {
+  const retries = await loadRetries(env);
+  const now = Date.now() / 1000;
+  const due = [];
+  for (const r of retries) {
+    if (r.status !== "pending") continue;
+    if (Number(r.not_before) > now) continue;
+    r.status = "dispatched";
+    r.dispatched_at = now;
+    due.push(r);
+  }
+  if (!due.length) {
+    return { dispatched: 0 };
+  }
+  await saveRetries(env, retries);
+  const results = [];
+  for (const r of due) {
+    const out = await dispatchEvent(env, DISPATCH_EVENT_REVIEW, {
+      repo: r.repo,
+      pr_number: r.pr_number,
+      installation_id: r.installation_id,
+      trigger: "auto_retry",
+      force: true,
+      auto_retry: true,
+    });
+    results.push({ repo: r.repo, pr: r.pr_number, ...out });
+  }
+  console.log(`flushed ${due.length} due auto-retr(y/ies)`, JSON.stringify(results));
+  return { dispatched: due.length, results };
+}
+
 async function handleLedger(request, env, url) {
   if (!assertLedgerAuth(request, env)) {
     return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401 });
@@ -456,6 +524,67 @@ async function handleLedger(request, env, url) {
     return json(merged);
   }
 
+  // Soft concurrency semaphore across Actions runs.
+  if (url.pathname === "/ledger/slots/acquire" && request.method === "POST") {
+    const body = await request.json();
+    const provider = String(body.provider || "");
+    const holderId = String(body.holder_id || "");
+    const maxInflight = Math.max(1, Number(body.max_inflight) || 1);
+    const ttlSec = Math.max(30, Math.min(600, Number(body.ttl_sec) || 180));
+    if (!provider || !holderId) {
+      return json({ ok: false, error: "provider and holder_id required" }, 400);
+    }
+    const slots = await loadSlots(env);
+    const now = Date.now() / 1000;
+    const list = (slots[provider] || []).filter((s) => s.until > now && s.holder_id !== holderId);
+    if (list.length >= maxInflight) {
+      return json({ ok: false, held: list.length, max: maxInflight });
+    }
+    list.push({ holder_id: holderId, until: now + ttlSec });
+    slots[provider] = list;
+    await saveSlots(env, slots);
+    return json({ ok: true, held: list.length, max: maxInflight });
+  }
+
+  if (url.pathname === "/ledger/slots/release" && request.method === "POST") {
+    const body = await request.json();
+    const provider = String(body.provider || "");
+    const holderId = String(body.holder_id || "");
+    const slots = await loadSlots(env);
+    const now = Date.now() / 1000;
+    slots[provider] = (slots[provider] || []).filter(
+      (s) => s.until > now && s.holder_id !== holderId,
+    );
+    await saveSlots(env, slots);
+    return json({ ok: true });
+  }
+
+  // Delayed one-shot review retries after capacity defer.
+  if (url.pathname === "/ledger/retries" && request.method === "POST") {
+    const body = await request.json();
+    const retries = await loadRetries(env);
+    const repo = body.repo;
+    const pr = Number(body.pr_number);
+    // supersede prior pending for same PR
+    for (const r of retries) {
+      if (r.repo === repo && Number(r.pr_number) === pr && r.status === "pending") {
+        r.status = "cancelled";
+      }
+    }
+    retries.push({
+      retry_id: crypto.randomUUID().slice(0, 12),
+      repo,
+      pr_number: pr,
+      installation_id: body.installation_id,
+      comment_id: body.comment_id || null,
+      not_before: Number(body.not_before) || Date.now() / 1000 + 90,
+      status: "pending",
+      created_at: Date.now() / 1000,
+    });
+    await saveRetries(env, retries);
+    return json({ ok: true, pending: retries.filter((r) => r.status === "pending").length });
+  }
+
   return new Response("Not found", { status: 404 });
 }
 
@@ -521,8 +650,22 @@ export default {
   },
 
   async scheduled(event, env, ctx) {
-    // Cron: dispatch sorge-drain when ledger has pending tickets.
-    // Uses SORGE_DRAIN_INSTALLATION_ID (org install that can dispatch to deepiri-sorge).
+    // Every minute: fire due auto-retries. Hourly (:20): escalate drain backup.
+    const cron = event.cron || "";
+    try {
+      const flushed = await flushDueRetries(env);
+      if (flushed.dispatched) {
+        console.log(`scheduled retries: dispatched ${flushed.dispatched}`);
+      }
+    } catch (err) {
+      console.error("flushDueRetries failed:", err.message || err);
+    }
+
+    const isHourlyDrain = cron === "20 * * * *";
+    if (!isHourlyDrain) {
+      return;
+    }
+
     const installId = env.SORGE_DRAIN_INSTALLATION_ID || env.SORGE_DEFAULT_INSTALLATION_ID;
     if (!installId) {
       console.log("scheduled drain skipped: no SORGE_DRAIN_INSTALLATION_ID");
@@ -537,8 +680,7 @@ export default {
       }
       console.log(`scheduled drain: ${pending} pending ticket(s)`);
     }
-    ctx.waitUntil(
-      dispatchDrain(env, installId).then((r) => console.log("drain dispatch", JSON.stringify(r))),
-    );
+    const result = await dispatchDrain(env, installId);
+    console.log("scheduled drain result", JSON.stringify(result));
   },
 };

@@ -68,6 +68,10 @@ wall_clock_sec = 720
 max_workers = 4
 health_threshold = 25.0
 partial_on_exhausted = true
+# Wait for cooldowns / slots, but don't burn the Actions job for 10+ minutes.
+max_capacity_wait_sec = 120
+auto_retry_delay_min_sec = 60
+auto_retry_delay_max_sec = 120
 
 [providers.groq]
 rpm = 30

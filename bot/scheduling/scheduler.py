@@ -94,6 +94,11 @@ class ReviewScheduler:
         overhead = max(0, int(prompt_overhead_tokens))
         if overhead <= 0:
             overhead = TEMPLATE_OVERHEAD_TOKENS
+        from bot.scheduling.semaphore import ProviderSemaphore
+
+        max_cap_wait = float(
+            getattr(config.scheduler, "max_capacity_wait_sec", 120.0) or 120.0
+        )
         ctx = RunContext(
             providers=runtimes,
             quota=quota,
@@ -109,10 +114,13 @@ class ReviewScheduler:
             pr_number=int(pr_number or 0),
             installation_id=installation_id,
             head_sha=head_sha or "",
+            max_capacity_wait_sec=max_cap_wait,
+            semaphore=ProviderSemaphore(),
         )
         logger.info(
             f"Provider history loaded ({len(getattr(history, '_stats', {}))} keys); "
-            f"prompt_overhead_tokens={overhead}"
+            f"prompt_overhead_tokens={overhead}; "
+            f"max_capacity_wait_sec={max_cap_wait:.0f}"
         )
         return cls(providers, ctx, max_workers=config.scheduler.max_workers)
 
@@ -175,9 +183,16 @@ class ReviewScheduler:
             if not batch:
                 wait = self._min_wake_sec()
                 remaining = self.ctx.remaining_sec()
+                budget = self.ctx.capacity_budget_remaining()
                 if wait is not None and wait > remaining:
                     wait = remaining - 5.0 if remaining >= 15.0 else None
-                if wait is None or wait <= 0:
+                # Soft cap: wait for cooldowns, but don't park the job for 10+ minutes.
+                if wait is not None and wait > budget:
+                    if budget >= 20.0:
+                        wait = budget
+                    else:
+                        wait = None
+                if wait is None or wait <= 0 or budget < 5.0:
                     cool_hint = 0.0
                     if isinstance(self.ctx.history, ProviderHistory):
                         cool_hint = self.ctx.history.max_cooling_remaining()
@@ -189,13 +204,28 @@ class ReviewScheduler:
                         if cool_hint > 0:
                             mins = max(1, int((cool_hint + 59) // 60))
                             reason += f"; retry_in_approx_{mins}m"
+                        if self.ctx.capacity_waited_sec > 0:
+                            reason += (
+                                f"; capacity_waited={self.ctx.capacity_waited_sec:.0f}s"
+                            )
                         reason += ")"
                         skipped.append(SkipRecord(s.chunk, reason))
                     self.meta.stop_reason = "providers_exhausted"
-                    self.meta.retry_after_sec = cool_hint if cool_hint > 0 else None
+                    self.meta.retry_after_sec = cool_hint if cool_hint > 0 else 90.0
+                    logger.info(
+                        f"Early defer after capacity wait "
+                        f"{self.ctx.capacity_waited_sec:.0f}s/"
+                        f"{self.ctx.max_capacity_wait_sec:.0f}s budget"
+                    )
                     break
-                logger.info(f"Scheduler waiting {wait:.1f}s for provider capacity")
-                time.sleep(min(wait, 15.0))
+                sleep_for = min(wait, 15.0, budget)
+                logger.info(
+                    f"Scheduler waiting {sleep_for:.1f}s for provider capacity "
+                    f"(waited {self.ctx.capacity_waited_sec:.0f}s/"
+                    f"{self.ctx.max_capacity_wait_sec:.0f}s)"
+                )
+                time.sleep(sleep_for)
+                self.ctx.capacity_waited_sec += sleep_for
                 queue = still_waiting
                 continue
 
@@ -278,6 +308,7 @@ class ReviewScheduler:
                             outcome.is_capacity_failure
                             and scheduled.rate_limit_rounds < MAX_RATE_LIMIT_ROUNDS
                             and self.ctx.remaining_sec() > 20
+                            and self.ctx.capacity_budget_remaining() > 15
                         ):
                             scheduled.rate_limit_rounds += 1
                             scheduled.attempted_providers.clear()
@@ -301,6 +332,9 @@ class ReviewScheduler:
 
         if pending_escalates:
             results.extend(self._flush_pending_escalates(pending_escalates))
+
+        if self.ctx.semaphore is not None:
+            self.ctx.semaphore.release_all()
 
         if queue and not self.ctx.alive():
             self.meta.stop_reason = "deadline"
