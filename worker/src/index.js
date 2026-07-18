@@ -40,25 +40,9 @@ async function verifySignature(body, signature, secret) {
   return crypto.subtle.verify("HMAC", key, sigBytes, enc.encode(body));
 }
 
-function escapeRegex(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
+import { hasSorgeSlashCommand } from "./slash_command.js";
 
-/** True when a PR comment body contains a /sorge slash command. */
-export function hasSorgeSlashCommand(body, extraLogin) {
-  if (!body || typeof body !== "string") return false;
-
-  const handles = ["sorge"];
-  if (extraLogin) {
-    handles.push(extraLogin.replace(/^\//, "").replace(/^@/, ""));
-  }
-
-  return handles.some((handle) => {
-    const escaped = escapeRegex(handle);
-    const pattern = new RegExp(`/${escaped}(-[\\w-]+)?\\b`, "i");
-    return pattern.test(body);
-  });
-}
+export { hasSorgeSlashCommand };
 
 function base64UrlEncode(bytes) {
   let binary = "";
