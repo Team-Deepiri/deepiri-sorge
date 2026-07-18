@@ -186,3 +186,66 @@ def test_confidence_rule_requires_binding_before_cited_line(tmp_path: Path):
     )
     verified = ClaimVerifier().verify_result(result, repo_root=tmp_path)
     assert len(verified.issues) == 1
+
+
+def test_suppresses_missing_npm_deps_when_declared_on_head(tmp_path: Path):
+    (tmp_path / "package.json").write_text(
+        '{"dependencies": {"mammoth": "^1.6.0", "pdf-parse": "^1.1.1"}}'
+    )
+    result = ReviewResult(
+        summary="deps",
+        issues=[
+            ReviewIssue(
+                severity="high",
+                file="src/services/documentService.ts",
+                line=204,
+                message=(
+                    "The documentService.ts file now uses `pdf-parse` and `mammoth` "
+                    "for local text extraction. However, these new dependencies are "
+                    "not listed in `package.json` or `package-lock.json` within this "
+                    "diff. This will lead to runtime errors if not explicitly added."
+                ),
+                suggestion=(
+                    "Add `pdf-parse` and `mammoth` to package.json and run npm install."
+                ),
+            ),
+            ReviewIssue(
+                severity="medium",
+                file="src/routes/documentRoutes.ts",
+                line=109,
+                message="Simplistic documentType defaulting to PDF for unknown MIME types.",
+            ),
+        ],
+        recommendations=[],
+        score=7.8,
+        latency_ms=1.0,
+        model="test",
+    )
+    verified = ClaimVerifier().verify_result(result, repo_root=tmp_path)
+    assert len(verified.issues) == 1
+    assert verified.issues[0].file == "src/routes/documentRoutes.ts"
+    assert verified.routing_meta["claim_verifier"]["suppressed"] == 1
+
+
+def test_keeps_missing_dep_claim_when_package_absent(tmp_path: Path):
+    (tmp_path / "package.json").write_text('{"dependencies": {"express": "^4.0.0"}}')
+    result = ReviewResult(
+        summary="deps",
+        issues=[
+            ReviewIssue(
+                severity="high",
+                file="src/a.ts",
+                line=1,
+                message=(
+                    "`left-pad` is not listed in package.json and will lead to "
+                    "runtime errors."
+                ),
+            )
+        ],
+        recommendations=[],
+        score=6.0,
+        latency_ms=1.0,
+        model="test",
+    )
+    verified = ClaimVerifier().verify_result(result, repo_root=tmp_path)
+    assert len(verified.issues) == 1

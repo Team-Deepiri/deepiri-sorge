@@ -1,14 +1,17 @@
-"""Conservative post-LLM claim verifier for structural false positives.
+"""Conservative post-LLM claim verifier for structural / dependency false positives.
 
 Policy (confidence rule):
-  Suppress ONLY when the verifier can positively establish that the referenced
-  symbol exists in the post-change code before the cited location
-  (``confidence == "disproven"``). Otherwise preserve the original finding
-  (``uncertain`` / ``confirmed``).
+  Suppress ONLY when the verifier can positively establish that the claim is
+  false against the PR-head checkout (``confidence == "disproven"``). Otherwise
+  preserve the original finding (``uncertain`` / ``confirmed``).
+
+  1. Structural / NameError claims → symbol index (bound before cited line).
+  2. Missing-dependency claims → package.json / requirements / pyproject on HEAD.
 """
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,11 +33,33 @@ _STRUCTURAL_RE = re.compile(
     r")\b"
 )
 
+# "X is not in package.json / requirements / lockfile" style claims.
+_DEPENDENCY_MANIFEST_RE = re.compile(
+    r"(?i)\b("
+    r"package\.json|package-lock\.json|npm|yarn\.lock|pnpm-lock|"
+    r"requirements(?:\.txt)?|pyproject\.toml|poetry\.lock|Pipfile(?:\.lock)?"
+    r")\b"
+)
+_DEPENDENCY_MISSING_RE = re.compile(
+    r"(?i)\b("
+    r"not\s+(?:listed|present|declared|included|found)|"
+    r"missing\s+(?:from|in)|"
+    r"absent\s+from|"
+    r"not\s+in|"
+    r"need(?:s)?\s+to\s+be\s+added|"
+    r"add\s+(?:to|them\s+to)\s+(?:package\.json|requirements)|"
+    r"will\s+lead\s+to\s+runtime\s+errors"
+    r")\b"
+)
+
 # Prefer explicit code mentions first.
-_BACKTICK_RE = re.compile(r"`([A-Za-z_][\w.]*)`")
-_QUOTED_RE = re.compile(r"['\"]([A-Za-z_][\w.]*)['\"]")
+_BACKTICK_RE = re.compile(r"`([^`]+)`")
+_QUOTED_RE = re.compile(r"['\"]([^'\"]+)['\"]")
 # Identifier-ish tokens (drop very short / common English words).
 _IDENT_RE = re.compile(r"\b([A-Z][A-Za-z0-9_]{2,}|[a-z_][a-z0-9_]{3,})\b")
+_PKG_NAME_RE = re.compile(
+    r"^(?:@[A-Za-z0-9._-]+/)?[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$"
+)
 _STOPWORDS = frozenset({
     "this", "that", "with", "from", "import", "class", "def", "return",
     "true", "false", "none", "null", "self", "alias", "before", "after",
@@ -43,6 +68,8 @@ _STOPWORDS = frozenset({
     "line", "code", "logic", "reassigns", "reassign", "suggestion", "replace",
     "remove", "create", "single", "backward", "compatible", "module",
     "python", "issue", "should", "would", "could", "seems", "appears",
+    "package", "json", "lock", "dependencies", "dependency", "npm", "install",
+    "runtime", "errors", "explicitly", "added", "listed", "present",
 })
 
 
@@ -66,7 +93,7 @@ class VerificationReport:
 
 
 class ClaimVerifier:
-    """Filter structurally impossible findings against a post-image symbol map."""
+    """Filter structurally impossible / falsely missing-dep findings on PR HEAD."""
 
     def __init__(self, indexer: SymbolIndexer | None = None):
         self.indexer = indexer or SymbolIndexer()
@@ -89,7 +116,7 @@ class ClaimVerifier:
             return result
 
         logger.info(
-            f"ClaimVerifier suppressed {report.suppressed_count} structural "
+            f"ClaimVerifier suppressed {report.suppressed_count} "
             f"finding(s) (high-confidence disproven only)"
         )
         for record in report.suppressed:
@@ -139,9 +166,26 @@ class ClaimVerifier:
         if not issues:
             return report
 
+        declared = self._load_declared_dependencies(repo_root)
         index_by_path = self._load_indexes(repo_root, changed_paths, indexes, issues)
 
         for issue in issues:
+            if self._looks_dependency_claim(issue):
+                confidence, symbol, reason = self._evaluate_dependency(issue, declared)
+                if confidence == "disproven":
+                    report.suppressed.append(
+                        SuppressionRecord(
+                            file=issue.file,
+                            line=issue.line,
+                            message=issue.message,
+                            symbol=symbol,
+                            reason=reason,
+                        )
+                    )
+                else:
+                    report.kept.append(issue)
+                continue
+
             if not self._looks_structural(issue):
                 report.kept.append(issue)
                 continue
@@ -183,6 +227,144 @@ class ClaimVerifier:
             part for part in (issue.message, issue.suggestion or "", issue.rule or "") if part
         )
         return bool(_STRUCTURAL_RE.search(blob))
+
+    def _looks_dependency_claim(self, issue: ReviewIssue) -> bool:
+        blob = " ".join(
+            part for part in (issue.message, issue.suggestion or "", issue.rule or "") if part
+        )
+        return bool(
+            _DEPENDENCY_MANIFEST_RE.search(blob) and _DEPENDENCY_MISSING_RE.search(blob)
+        )
+
+    def _load_declared_dependencies(self, repo_root: Path) -> set[str]:
+        """Package names declared on PR HEAD (npm + common Python manifests)."""
+        names: set[str] = set()
+        root = Path(repo_root)
+
+        pkg = root / "package.json"
+        if pkg.is_file():
+            try:
+                data = json.loads(pkg.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as e:
+                logger.debug(f"ClaimVerifier: package.json unreadable: {e}")
+            else:
+                for section in (
+                    "dependencies",
+                    "devDependencies",
+                    "optionalDependencies",
+                    "peerDependencies",
+                ):
+                    block = data.get(section) or {}
+                    if isinstance(block, dict):
+                        names.update(str(k) for k in block.keys())
+
+        req = root / "requirements.txt"
+        if req.is_file():
+            try:
+                for line in req.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    # pkg==1.0 / pkg>=1 / pkg[extra]==1
+                    token = re.split(r"[<>=!~;\s\[]", line, maxsplit=1)[0].strip()
+                    if token:
+                        names.add(token)
+            except OSError as e:
+                logger.debug(f"ClaimVerifier: requirements.txt unreadable: {e}")
+
+        pyproject = root / "pyproject.toml"
+        if pyproject.is_file():
+            try:
+                text = pyproject.read_text(encoding="utf-8")
+            except OSError as e:
+                logger.debug(f"ClaimVerifier: pyproject.toml unreadable: {e}")
+            else:
+                # Lightweight: quoted package names in dependency tables.
+                for match in re.finditer(
+                    r'(?m)^\s*(?:["\']([A-Za-z0-9][A-Za-z0-9._-]*)["\']|'
+                    r"([A-Za-z0-9][A-Za-z0-9._-]*)\s*=)",
+                    text,
+                ):
+                    name = match.group(1) or match.group(2)
+                    if name and name.lower() not in {
+                        "name",
+                        "version",
+                        "description",
+                        "authors",
+                        "dependencies",
+                        "dev-dependencies",
+                        "tool",
+                        "build-system",
+                        "project",
+                    }:
+                        names.add(name)
+
+        return names
+
+    def _evaluate_dependency(
+        self,
+        issue: ReviewIssue,
+        declared: set[str],
+    ) -> tuple[str, str | None, str]:
+        packages = self._extract_package_names(issue)
+        if not packages:
+            return "uncertain", None, "could not extract package name from finding"
+        if not declared:
+            return "uncertain", packages[0], "no dependency manifests readable on HEAD"
+
+        declared_l = {n.lower(): n for n in declared}
+        present: list[str] = []
+        missing: list[str] = []
+        for pkg in packages:
+            key = pkg.lower()
+            if key in declared_l or pkg in declared:
+                present.append(declared_l.get(key, pkg))
+            else:
+                missing.append(pkg)
+
+        if present and not missing:
+            joined = ", ".join(present)
+            return (
+                "disproven",
+                present[0],
+                f"{joined} declared on PR HEAD (diff-only false positive)",
+            )
+        if present and missing:
+            # Partial: keep the finding — some claimed packages really absent.
+            return (
+                "uncertain",
+                missing[0],
+                f"partial: {', '.join(present)} present; {', '.join(missing)} not found",
+            )
+        return "uncertain", missing[0], "claimed packages not found on HEAD manifests"
+
+    def _extract_package_names(self, issue: ReviewIssue) -> list[str]:
+        blob = " ".join(
+            part for part in (issue.message, issue.suggestion or "") if part
+        )
+        found: list[str] = []
+        for pattern in (_BACKTICK_RE, _QUOTED_RE):
+            for match in pattern.finditer(blob):
+                raw = match.group(1).strip()
+                # Drop path-like mentions; allow scoped npm @scope/name.
+                if "/" in raw and not raw.startswith("@"):
+                    continue
+                if raw.lower() in {
+                    "package.json",
+                    "package-lock.json",
+                    "requirements.txt",
+                    "pyproject.toml",
+                    "npm install",
+                }:
+                    continue
+                name = raw.split()[0]
+                if not _PKG_NAME_RE.match(name):
+                    continue
+                if name.lower() in _STOPWORDS:
+                    continue
+                if name not in found:
+                    found.append(name)
+        return found
 
     def _evaluate(
         self,
