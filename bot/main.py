@@ -11,6 +11,7 @@ from loguru import logger
 from bot.claim_verifier import ClaimVerifier
 from bot.comment_poster import CommentPoster
 from bot.config import Config
+from bot.context_shaver import ContextShaver, should_engage_context_shave
 from bot.decision_engine import Action, DecisionEngine
 from bot.diff_parser import DiffParser
 from bot.file_splitter import FileSplitter
@@ -20,6 +21,7 @@ from bot.providers import build_providers
 from bot.quota_tracker import QuotaTracker
 from bot.repo_context import RepoContextWeaver
 from bot.review_aggregator import ReviewAggregator
+from bot.scheduling.history import ProviderHistory
 from bot.scheduling.market_score import TEMPLATE_OVERHEAD_TOKENS
 from bot.scheduling.scheduler import ReviewScheduler
 from bot.schemas import ReviewResult as ReviewResultSchema
@@ -136,13 +138,64 @@ def run_auto_review(
             unreviewable=unreviewable or None,
         )
 
+    overhead = TEMPLATE_OVERHEAD_TOKENS + max(0, extra_chars // 4)
+    history = ProviderHistory()
+    engage, engage_reason = should_engage_context_shave(
+        enabled=bool(getattr(config.routing, "context_shave_enabled", False)),
+        quota=quota,
+        providers=providers,
+        chunks=runnable,
+        prompt_overhead=overhead,
+        history=history,
+    )
+    if engage:
+        logger.info(
+            f"Context shave fallback engaged (reason={engage_reason}); "
+            "Gemini fully dead + oversized for secondary lanes"
+        )
+        shaver = ContextShaver(
+            max_extracts=int(
+                getattr(config.routing, "context_shave_max_extracts", 12) or 12
+            ),
+            shave_slice_budget=int(
+                getattr(config.routing, "context_shave_slice_budget", 3500) or 3500
+            ),
+        )
+        shaved, shave_meta = shaver.run(
+            parsed_diff,
+            config=config,
+            quota=quota,
+            providers=providers,
+            repo_context=repo_context,
+            context_fingerprint=context_fingerprint,
+            prompt_overhead=overhead,
+            repo=repo,
+            pr_number=pr_number,
+            installation_id=installation_id,
+            head_sha=head_sha,
+        )
+        if shaved is not None:
+            logger.info(
+                f"Context shave complete: slices={shave_meta.slices} "
+                f"llm_extracts={shave_meta.extracts_llm} "
+                f"cache_hits={shave_meta.cache_hits} "
+                f"mode={shave_meta.synthesize_mode}"
+            )
+            return shaved
+        logger.warning(
+            f"Context shave fail-open ({shave_meta.reason}); "
+            "continuing with normal scheduler path"
+        )
+    else:
+        logger.debug(f"Context shave not engaged ({engage_reason})")
+
     scheduler = ReviewScheduler.from_providers(
         providers,
         quota,
         config,
         repo_context=repo_context,
         context_fingerprint=context_fingerprint,
-        prompt_overhead_tokens=TEMPLATE_OVERHEAD_TOKENS + max(0, extra_chars // 4),
+        prompt_overhead_tokens=overhead,
         repo=repo,
         pr_number=pr_number,
         installation_id=installation_id,

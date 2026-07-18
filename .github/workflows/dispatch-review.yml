@@ -35,6 +35,11 @@ on:
         description: "GitHub App installation ID"
         required: false
         type: string
+      disable_gemini:
+        description: "Ops smoke: disable Gemini for this run (context-shave fallback)"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -101,6 +106,11 @@ jobs:
             else
               echo "AUTO_RETRY_FLAG=" >> "$GITHUB_OUTPUT"
             fi
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.disable_gemini }}" = "true" ]; then
+              echo "DISABLE_GEMINI=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "DISABLE_GEMINI=false" >> "$GITHUB_OUTPUT"
+            fi
           else
             echo "REPO=" >> "$GITHUB_OUTPUT"
             echo "REPO_OWNER=Team-Deepiri" >> "$GITHUB_OUTPUT"
@@ -109,6 +119,7 @@ jobs:
             echo "INSTALLATION_ID=${{ inputs.installation_id }}" >> "$GITHUB_OUTPUT"
             echo "FORCE_FLAG=" >> "$GITHUB_OUTPUT"
             echo "AUTO_RETRY_FLAG=" >> "$GITHUB_OUTPUT"
+            echo "DISABLE_GEMINI=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Generate App installation token
@@ -274,6 +285,11 @@ jobs:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -o pipefail
+          if [ "${{ steps.inputs.outputs.DISABLE_GEMINI }}" = "true" ]; then
+            export SORGE_GEMINI_ENABLED=false
+            echo "Ops smoke: Gemini disabled for this run (context-shave fallback)"
+          fi
+
           INSTALL_FLAG=""
           if [ -n "${{ steps.inputs.outputs.INSTALLATION_ID }}" ]; then
             INSTALL_FLAG="--installation-id ${{ steps.inputs.outputs.INSTALLATION_ID }}"
