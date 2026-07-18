@@ -293,12 +293,13 @@ def enrich_shaving_with_llm(
     shaving: Shaving,
     chunk: ReviewChunk,
     provider: Provider | None,
-) -> Shaving:
+) -> tuple[Shaving, bool]:
+    """Return (shaving, llm_ok). llm_ok is True only when the provider returned usable JSON."""
     if provider is None:
-        return shaving
+        return shaving, False
     data = _llm_extract_via_provider(provider, chunk)
     if not data:
-        return shaving
+        return shaving, False
     exports = list(dict.fromkeys([*shaving.exports, *(data.get("exports") or [])]))[:12]
     imports = list(dict.fromkeys([*shaving.imports, *(data.get("imports") or [])]))[:12]
     effects = list(
@@ -308,16 +309,19 @@ def enrich_shaving_with_llm(
         dict.fromkeys([*shaving.fingerprints, *(data.get("fingerprints") or [])])
     )[:8]
     notes = str(data.get("notes") or shaving.notes)[:120]
-    return Shaving(
-        slice_id=shaving.slice_id,
-        files=shaving.files,
-        exports=exports,
-        imports=imports,
-        side_effects=effects,
-        fingerprints=fingerprints,
-        notes=notes,
-        source="llm",
-        content_sha=shaving.content_sha,
+    return (
+        Shaving(
+            slice_id=shaving.slice_id,
+            files=shaving.files,
+            exports=exports,
+            imports=imports,
+            side_effects=effects,
+            fingerprints=fingerprints,
+            notes=notes,
+            source="llm",
+            content_sha=shaving.content_sha,
+        ),
+        True,
     )
 
 
@@ -335,10 +339,16 @@ class ContextShaver:
         self.shave_slice_budget = max(500, shave_slice_budget)
         self.cache_ttl_hours = cache_ttl_hours
 
-    def slice_for_secondary(self, parsed_diff: ParsedDiff) -> list[ReviewChunk]:
+    def slice_for_secondary(
+        self,
+        parsed_diff: ParsedDiff,
+        *,
+        slice_budget: int | None = None,
+    ) -> list[ReviewChunk]:
+        budget = max(500, int(slice_budget or self.shave_slice_budget))
         splitter = FileSplitter(
-            chunk_budget=self.shave_slice_budget,
-            max_chunk_tokens=self.shave_slice_budget,
+            chunk_budget=budget,
+            max_chunk_tokens=budget,
         )
         return splitter.split(parsed_diff)
 
@@ -371,8 +381,9 @@ class ContextShaver:
                 and shaving_is_thin(s)
                 and llm_extracts < self.max_extracts
             ):
-                s = enrich_shaving_with_llm(s, chunk, extract_provider)
-                llm_extracts += 1
+                s, ok = enrich_shaving_with_llm(s, chunk, extract_provider)
+                if ok:
+                    llm_extracts += 1
             if use_cache:
                 shaving_cache.set(s.content_sha, s.to_dict())
             shavings.append(s)
@@ -416,6 +427,50 @@ class ContextShaver:
             meta.synthesize_mode = "skipped"
             return None, meta
 
+    def _secondary_providers(
+        self,
+        providers: list[Provider],
+        quota: QuotaTracker,
+    ) -> list[Provider]:
+        """Non-Gemini providers; OpenRouter first so wide failover wins picks."""
+        by_name = {p.name: p for p in providers}
+        ordered: list[Provider] = []
+        for name in ("openrouter", "groq"):
+            p = by_name.get(name)
+            if p is None:
+                continue
+            if name == "openrouter" and not quota.can_use("openrouter"):
+                # Still include — soft-reserve / last-resort may spend the slot mid-run.
+                ordered.append(p)
+                continue
+            ordered.append(p)
+        # Any other non-gemini backends
+        for p in providers:
+            if p.name not in ("gemini", "openrouter", "groq"):
+                ordered.append(p)
+        return ordered
+
+    def _slice_budget_for_secondaries(
+        self,
+        quota: QuotaTracker,
+        providers: list[Provider],
+        prompt_overhead: int,
+    ) -> int:
+        """Prefer wider OR-sized slices when OpenRouter is present."""
+        by_name = {p.name: p for p in providers}
+        if "openrouter" in by_name:
+            # Leave headroom for shaving pool + template.
+            return max(
+                self.shave_slice_budget,
+                min(80_000, LANE_OPENROUTER_MAX - max(0, prompt_overhead) - 2000),
+            )
+        if "groq" in by_name and quota.can_use("groq"):
+            return max(
+                500,
+                min(self.shave_slice_budget, LANE_GROQ_MAX - max(0, prompt_overhead) - 500),
+            )
+        return self.shave_slice_budget
+
     def _run_inner(
         self,
         parsed_diff: ParsedDiff,
@@ -432,19 +487,27 @@ class ContextShaver:
         head_sha: str,
         meta: ContextShaveMeta,
     ) -> tuple[ReviewResult | None, ContextShaveMeta]:
-        slices = [c for c in self.slice_for_secondary(parsed_diff) if not c.unreviewable]
+        by_name = {p.name: p for p in providers}
+        slice_budget = self._slice_budget_for_secondaries(
+            quota, providers, prompt_overhead
+        )
+        slices = [
+            c
+            for c in self.slice_for_secondary(parsed_diff, slice_budget=slice_budget)
+            if not c.unreviewable
+        ]
         if not slices:
             meta.reason = "no_slices"
             meta.synthesize_mode = "skipped"
             return None, meta
         meta.slices = len(slices)
 
-        by_name = {p.name: p for p in providers}
+        # Prefer OR for extracts so we don't burn Groq RPM before reviews.
         extract_provider = None
-        if "groq" in by_name and quota.can_use("groq"):
-            extract_provider = by_name["groq"]
-        elif "openrouter" in by_name and quota.can_use("openrouter"):
+        if "openrouter" in by_name and quota.can_use("openrouter"):
             extract_provider = by_name["openrouter"]
+        elif "groq" in by_name and quota.can_use("groq"):
+            extract_provider = by_name["groq"]
 
         shavings, cache_hits, llm_n = self.build_shavings(
             slices, extract_provider=extract_provider, use_cache=True
@@ -462,13 +525,13 @@ class ContextShaver:
 
         total_tokens = estimate_tokens(parsed_diff.raw or "")
         fit = max_remaining_fit_tokens(quota, providers, prompt_overhead=prompt_overhead)
-        secondary = [p for p in providers if p.name != "gemini"]
+        secondary = self._secondary_providers(providers, quota)
         if not secondary:
             meta.synthesize_mode = "skipped"
             meta.reason = "no_secondary"
             return None, meta
 
-        # Prefer one joint synthesize when the full diff fits a secondary lane.
+        # Prefer one joint synthesize when the full diff fits a secondary lane (usually OR).
         if total_tokens <= fit:
             meta.synthesize_mode = "single"
             full_chunk = ReviewChunk(
@@ -489,6 +552,24 @@ class ContextShaver:
                 head_sha=head_sha,
             )
             results, skipped, sched_meta = scheduler.run([full_chunk])
+            # Mid-run style failover: if the single pass skipped and another secondary exists, retry.
+            results, skipped, sched_meta = self._failover_leftovers(
+                results,
+                skipped,
+                sched_meta,
+                leftover_chunks=[full_chunk] if skipped else [],
+                secondary=secondary,
+                quota=quota,
+                config=config,
+                combined_context=combined_context,
+                context_fingerprint=context_fingerprint,
+                prompt_overhead=prompt_overhead,
+                repo=repo,
+                pr_number=pr_number,
+                installation_id=installation_id,
+                head_sha=head_sha,
+                meta=meta,
+            )
             meta.synthesize_provider = _first_ok_provider(sched_meta)
             merged = ReviewAggregator.merge(
                 results,
@@ -500,7 +581,7 @@ class ContextShaver:
             _attach_shave_meta(merged, meta)
             return merged, meta
 
-        # Else: per-slice reviews each see the joint shaving pool (virtual context).
+        # Per-slice reviews with joint shaving pool; leftovers failover to OR / retry Groq.
         meta.synthesize_mode = "per_slice"
         scheduler = ReviewScheduler.from_providers(
             secondary,
@@ -515,6 +596,24 @@ class ContextShaver:
             head_sha=head_sha,
         )
         results, skipped, sched_meta = scheduler.run(slices)
+        leftover = [s.chunk for s in (skipped or [])]
+        results, skipped, sched_meta = self._failover_leftovers(
+            results,
+            skipped,
+            sched_meta,
+            leftover_chunks=leftover,
+            secondary=secondary,
+            quota=quota,
+            config=config,
+            combined_context=combined_context,
+            context_fingerprint=context_fingerprint,
+            prompt_overhead=prompt_overhead,
+            repo=repo,
+            pr_number=pr_number,
+            installation_id=installation_id,
+            head_sha=head_sha,
+            meta=meta,
+        )
         meta.synthesize_provider = _first_ok_provider(sched_meta)
         merged = ReviewAggregator.merge(
             results,
@@ -525,6 +624,71 @@ class ContextShaver:
         )
         _attach_shave_meta(merged, meta)
         return merged, meta
+
+    def _failover_leftovers(
+        self,
+        results: list,
+        skipped: list,
+        sched_meta,
+        *,
+        leftover_chunks: list[ReviewChunk],
+        secondary: list[Provider],
+        quota: QuotaTracker,
+        config,
+        combined_context: str,
+        context_fingerprint: str,
+        prompt_overhead: int,
+        repo: str,
+        pr_number: int,
+        installation_id: int | None,
+        head_sha: str,
+        meta: ContextShaveMeta,
+    ):
+        """Requeue skipped slices onto OpenRouter (preferred) or a fresh Groq pass."""
+        if not leftover_chunks:
+            return results, skipped, sched_meta
+
+        by_name = {p.name: p for p in secondary}
+        failover: list[Provider] = []
+        # Prefer OR for leftovers (wider + usually cooler after Groq stampede).
+        if "openrouter" in by_name:
+            failover.append(by_name["openrouter"])
+        if "groq" in by_name:
+            failover.append(by_name["groq"])
+        if not failover:
+            return results, skipped, sched_meta
+
+        logger.info(
+            f"Context shave failover: requeue {len(leftover_chunks)} leftover slice(s) "
+            f"onto {[p.name for p in failover]}"
+        )
+        meta.synthesize_mode = f"{meta.synthesize_mode}+failover"
+        scheduler = ReviewScheduler.from_providers(
+            failover,
+            quota,
+            config,
+            repo_context=combined_context,
+            context_fingerprint=f"{context_fingerprint}:shave-failover",
+            prompt_overhead_tokens=prompt_overhead,
+            repo=repo,
+            pr_number=pr_number,
+            installation_id=installation_id,
+            head_sha=head_sha,
+        )
+        more, still_skipped, more_meta = scheduler.run(leftover_chunks)
+        results = list(results or []) + list(more or [])
+        # Merge scheduler metas lightly
+        if sched_meta is not None and more_meta is not None:
+            sched_meta.dispatches = getattr(sched_meta, "dispatches", 0) + getattr(
+                more_meta, "dispatches", 0
+            )
+            sched_meta.skipped = len(still_skipped or [])
+            picks = list(getattr(sched_meta, "provider_picks", []) or [])
+            picks.extend(getattr(more_meta, "provider_picks", []) or [])
+            sched_meta.provider_picks = picks
+            if getattr(more_meta, "stop_reason", None):
+                sched_meta.stop_reason = more_meta.stop_reason
+        return results, still_skipped, sched_meta
 
 
 def _first_ok_provider(sched_meta: SchedulerMeta | None) -> str:

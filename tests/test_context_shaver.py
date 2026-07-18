@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from bot.context_shaver import (
+    ContextShaver,
     content_sha,
     gemini_fully_dead,
     layer0_shaving,
@@ -88,7 +89,6 @@ def test_should_engage_when_gemini_dead_and_oversize():
 
 def test_should_not_engage_when_gemini_dead_but_fits_groq():
     quota = QuotaTracker(limits={"gemini": 1, "gpt": 10, "openrouter": 10}, used={"gemini": 1, "gpt": 0, "openrouter": 0})
-    # Diff tokens small enough that fit_diff = 7000-2500 = 4500 still covers it
     chunks = [_chunk(["a.py"], 800)]
     engage, reason = should_engage_context_shave(
         enabled=True,
@@ -122,11 +122,58 @@ def test_layer0_shaving_extracts_exports_and_is_compact():
     assert "runQueue" in pooled
 
 
+def test_secondary_providers_prefer_openrouter():
+    quota = QuotaTracker(
+        limits={"gemini": 0, "gpt": 10, "openrouter": 10},
+        used={"gemini": 0, "gpt": 0, "openrouter": 0},
+    )
+    ordered = ContextShaver()._secondary_providers(
+        [_P("groq"), _P("gemini"), _P("openrouter")], quota
+    )
+    assert [p.name for p in ordered] == ["openrouter", "groq"]
+
+
+def test_slice_budget_wider_when_openrouter_present():
+    quota = QuotaTracker(
+        limits={"gemini": 0, "gpt": 10, "openrouter": 10},
+        used={"gemini": 0, "gpt": 0, "openrouter": 0},
+    )
+    shaver = ContextShaver(shave_slice_budget=3500)
+    with_or = shaver._slice_budget_for_secondaries(
+        quota, [_P("groq"), _P("openrouter")], prompt_overhead=2500
+    )
+    groq_only = shaver._slice_budget_for_secondaries(
+        quota, [_P("groq")], prompt_overhead=2500
+    )
+    assert with_or > groq_only
+    assert with_or >= 10_000
+
+
+def test_enrich_llm_failed_extract_does_not_count(monkeypatch):
+    from bot import context_shaver as cs
+
+    sh = layer0_shaving(_chunk(["a.py"], 100), slice_id="s")
+    monkeypatch.setattr(cs, "_llm_extract_via_provider", lambda *_a, **_k: None)
+    out, ok = cs.enrich_shaving_with_llm(sh, _chunk(["a.py"], 100), _P("openrouter"))
+    assert ok is False
+    assert out.source == "heuristic"
+
+
 def test_shaving_cache_roundtrip(tmp_path, monkeypatch):
     from bot.utils import shaving_cache
 
     monkeypatch.setattr(shaving_cache, "CACHE_DIR", tmp_path)
-    payload = {"slice_id": "s", "files": ["a.py"], "exports": ["f"], "imports": [], "side_effects": [], "fingerprints": [], "notes": "", "source": "heuristic", "content_sha": "abc"}
+    payload = {
+        "slice_id": "s",
+        "files": ["a.py"],
+        "exports": ["f"],
+        "imports": [],
+        "side_effects": [],
+        "fingerprints": [],
+        "notes": "",
+        "source": "heuristic",
+        "content_sha": "abc",
+    }
     shaving_cache.set("abc", payload)
     got = shaving_cache.get("abc", ttl_hours=24)
     assert got is not None
