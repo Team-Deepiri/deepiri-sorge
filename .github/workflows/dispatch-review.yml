@@ -35,16 +35,6 @@ on:
         description: "GitHub App installation ID"
         required: false
         type: string
-      disable_gemini:
-        description: "Ops: disable Gemini for this run"
-        required: false
-        type: boolean
-        default: false
-      force_context_shave_smoke:
-        description: "Ops: disable Gemini+OpenRouter so only Groq remains (forces context-shave on large PRs)"
-        required: false
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -101,7 +91,7 @@ jobs:
             echo "PR_NUMBER=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
             echo "REPO_OWNER=${FULL_REPO%%/*}" >> "$GITHUB_OUTPUT"
             echo "REPO_NAME=${FULL_REPO##*/}" >> "$GITHUB_OUTPUT"
-            if [ "$FORCE" = "true" ] || [ "${{ inputs.force_context_shave_smoke }}" = "true" ]; then
+            if [ "$FORCE" = "true" ]; then
               echo "FORCE_FLAG=--force" >> "$GITHUB_OUTPUT"
             else
               echo "FORCE_FLAG=" >> "$GITHUB_OUTPUT"
@@ -111,16 +101,6 @@ jobs:
             else
               echo "AUTO_RETRY_FLAG=" >> "$GITHUB_OUTPUT"
             fi
-            if [ "${{ github.event_name }}" = "workflow_dispatch" ] && { [ "${{ inputs.disable_gemini }}" = "true" ] || [ "${{ inputs.force_context_shave_smoke }}" = "true" ]; }; then
-              echo "DISABLE_GEMINI=true" >> "$GITHUB_OUTPUT"
-            else
-              echo "DISABLE_GEMINI=false" >> "$GITHUB_OUTPUT"
-            fi
-            if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.force_context_shave_smoke }}" = "true" ]; then
-              echo "FORCE_CONTEXT_SHAVE=true" >> "$GITHUB_OUTPUT"
-            else
-              echo "FORCE_CONTEXT_SHAVE=false" >> "$GITHUB_OUTPUT"
-            fi
           else
             echo "REPO=" >> "$GITHUB_OUTPUT"
             echo "REPO_OWNER=Team-Deepiri" >> "$GITHUB_OUTPUT"
@@ -129,8 +109,6 @@ jobs:
             echo "INSTALLATION_ID=${{ inputs.installation_id }}" >> "$GITHUB_OUTPUT"
             echo "FORCE_FLAG=" >> "$GITHUB_OUTPUT"
             echo "AUTO_RETRY_FLAG=" >> "$GITHUB_OUTPUT"
-            echo "DISABLE_GEMINI=false" >> "$GITHUB_OUTPUT"
-            echo "FORCE_CONTEXT_SHAVE=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Generate App installation token
@@ -296,16 +274,6 @@ jobs:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -o pipefail
-          if [ "${{ steps.inputs.outputs.DISABLE_GEMINI }}" = "true" ]; then
-            export SORGE_GEMINI_ENABLED=false
-            echo "Ops smoke: Gemini disabled for this run"
-          fi
-          if [ "${{ steps.inputs.outputs.FORCE_CONTEXT_SHAVE }}" = "true" ]; then
-            export SORGE_GEMINI_ENABLED=false
-            export SORGE_OPENROUTER_ENABLED=false
-            echo "Ops smoke: force context-shave (Gemini+OpenRouter disabled; Groq only)"
-          fi
-
           INSTALL_FLAG=""
           if [ -n "${{ steps.inputs.outputs.INSTALLATION_ID }}" ]; then
             INSTALL_FLAG="--installation-id ${{ steps.inputs.outputs.INSTALLATION_ID }}"
