@@ -1,0 +1,8 @@
+{
+  "name": "sorge-webhook",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test src/slash_command.test.js"
+  }
+}
