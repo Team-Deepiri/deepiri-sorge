@@ -11,13 +11,13 @@ Policy (confidence rule):
 
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from loguru import logger
 
+from bot.manifest_evidence import load_declared_dependencies
 from bot.schemas import ReviewIssue, ReviewResult, compute_score_from_issues
 from bot.symbol_index import FileSymbolIndex, SymbolIndexer
 
@@ -166,7 +166,7 @@ class ClaimVerifier:
         if not issues:
             return report
 
-        declared = self._load_declared_dependencies(repo_root)
+        declared = load_declared_dependencies(repo_root)
         index_by_path = self._load_indexes(repo_root, changed_paths, indexes, issues)
 
         for issue in issues:
@@ -236,71 +236,6 @@ class ClaimVerifier:
             _DEPENDENCY_MANIFEST_RE.search(blob) and _DEPENDENCY_MISSING_RE.search(blob)
         )
 
-    def _load_declared_dependencies(self, repo_root: Path) -> set[str]:
-        """Package names declared on PR HEAD (npm + common Python manifests)."""
-        names: set[str] = set()
-        root = Path(repo_root)
-
-        pkg = root / "package.json"
-        if pkg.is_file():
-            try:
-                data = json.loads(pkg.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError) as e:
-                logger.debug(f"ClaimVerifier: package.json unreadable: {e}")
-            else:
-                for section in (
-                    "dependencies",
-                    "devDependencies",
-                    "optionalDependencies",
-                    "peerDependencies",
-                ):
-                    block = data.get(section) or {}
-                    if isinstance(block, dict):
-                        names.update(str(k) for k in block.keys())
-
-        req = root / "requirements.txt"
-        if req.is_file():
-            try:
-                for line in req.read_text(encoding="utf-8").splitlines():
-                    line = line.strip()
-                    if not line or line.startswith("#"):
-                        continue
-                    # pkg==1.0 / pkg>=1 / pkg[extra]==1
-                    token = re.split(r"[<>=!~;\s\[]", line, maxsplit=1)[0].strip()
-                    if token:
-                        names.add(token)
-            except OSError as e:
-                logger.debug(f"ClaimVerifier: requirements.txt unreadable: {e}")
-
-        pyproject = root / "pyproject.toml"
-        if pyproject.is_file():
-            try:
-                text = pyproject.read_text(encoding="utf-8")
-            except OSError as e:
-                logger.debug(f"ClaimVerifier: pyproject.toml unreadable: {e}")
-            else:
-                # Lightweight: quoted package names in dependency tables.
-                for match in re.finditer(
-                    r'(?m)^\s*(?:["\']([A-Za-z0-9][A-Za-z0-9._-]*)["\']|'
-                    r"([A-Za-z0-9][A-Za-z0-9._-]*)\s*=)",
-                    text,
-                ):
-                    name = match.group(1) or match.group(2)
-                    if name and name.lower() not in {
-                        "name",
-                        "version",
-                        "description",
-                        "authors",
-                        "dependencies",
-                        "dev-dependencies",
-                        "tool",
-                        "build-system",
-                        "project",
-                    }:
-                        names.add(name)
-
-        return names
-
     def _evaluate_dependency(
         self,
         issue: ReviewIssue,
@@ -317,8 +252,9 @@ class ClaimVerifier:
         missing: list[str] = []
         for pkg in packages:
             key = pkg.lower()
-            if key in declared_l or pkg in declared:
-                present.append(declared_l.get(key, pkg))
+            alt = pkg.replace("_", "-").lower()
+            if key in declared_l or alt in declared_l or pkg in declared:
+                present.append(declared_l.get(key) or declared_l.get(alt) or pkg)
             else:
                 missing.append(pkg)
 
