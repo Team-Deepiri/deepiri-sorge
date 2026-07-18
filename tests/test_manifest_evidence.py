@@ -25,6 +25,25 @@ def test_extract_js_imports_skips_relative():
     assert pkgs == ["mammoth", "pdf-parse", "express"]
 
 
+def test_extract_skips_node_builtins_and_import_type_noise():
+    raw = """diff --git a/src/a.ts b/src/a.ts
+--- a/src/a.ts
++++ b/src/a.ts
+@@ -0,0 +1,5 @@
++import { createHash } from "node:crypto";
++import assert from "node:assert";
++import { describe } from "node:test";
++import type { Foo } from "mammoth";
++import pdfParse from 'pdf-parse';
+"""
+    diff = DiffParser().parse(raw)
+    pkgs = extract_imported_packages(diff)
+    assert pkgs == ["mammoth", "pdf-parse"]
+    assert "type" not in pkgs
+    assert "crypto" not in pkgs
+    assert "node:crypto" not in pkgs
+
+
 def test_format_import_manifest_only_lists_diff_imports(tmp_path: Path):
     (tmp_path / "package.json").write_text(
         '{"dependencies": {"mammoth": "1", "pdf-parse": "1", "left-pad": "1", '

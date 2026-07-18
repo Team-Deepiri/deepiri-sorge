@@ -241,6 +241,9 @@ def main() -> None:
             else manifest_block
         )
         context_fingerprint = f"{context_fingerprint}:m{len(manifest_block)}"
+        logger.info(
+            f"Repo context + IMPORT_VS_MANIFEST → {len(repo_context_text or '')} chars total"
+        )
 
     symbol_indexes = []
     if config.claim_verifier.enabled or config.claim_verifier.include_symbol_index:
