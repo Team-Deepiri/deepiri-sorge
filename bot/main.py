@@ -233,6 +233,13 @@ def main() -> None:
     # Merge env values into the config object, preserving nested model types
     for key in env_config.model_dump(exclude_unset=True, by_alias=False):
         setattr(config, key, getattr(env_config, key))
+    # Nested toggles: pydantic exclude_unset often drops mutations on submodels.
+    if os.getenv("SORGE_GEMINI_ENABLED") is not None:
+        config.gemini.enabled = os.getenv("SORGE_GEMINI_ENABLED", "").lower() == "true"
+    if os.getenv("SORGE_GROQ_ENABLED") is not None:
+        config.groq.enabled = os.getenv("SORGE_GROQ_ENABLED", "").lower() == "true"
+    if os.getenv("SORGE_OPENROUTER_ENABLED") is not None:
+        config.openrouter.enabled = os.getenv("SORGE_OPENROUTER_ENABLED", "").lower() == "true"
 
     github_token = resolve_github_token(args)
 
