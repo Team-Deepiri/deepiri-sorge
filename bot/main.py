@@ -15,6 +15,7 @@ from bot.decision_engine import Action, DecisionEngine
 from bot.diff_parser import DiffParser
 from bot.file_splitter import FileSplitter
 from bot.github_app import fetch_pr_diff, get_installation_token
+from bot.manifest_evidence import format_import_manifest_evidence
 from bot.providers import build_providers
 from bot.quota_tracker import QuotaTracker
 from bot.repo_context import RepoContextWeaver
@@ -230,6 +231,16 @@ def main() -> None:
     )
     repo_context_text = context_pack.text
     context_fingerprint = context_pack.fingerprint
+
+    # Compact: only packages newly imported in the DIFF vs HEAD manifests.
+    manifest_block = format_import_manifest_evidence(repo_root, parsed_diff)
+    if manifest_block:
+        repo_context_text = (
+            f"{repo_context_text}\n\n{manifest_block}"
+            if repo_context_text
+            else manifest_block
+        )
+        context_fingerprint = f"{context_fingerprint}:m{len(manifest_block)}"
 
     symbol_indexes = []
     if config.claim_verifier.enabled or config.claim_verifier.include_symbol_index:
