@@ -202,6 +202,35 @@ Total lines: +{diff.lines_added} -{diff.lines_deleted}
             result.score = min(float(result.score), 7.0)
         return result, truncated
 
+    def complete_user_prompt(self, prompt: str, *, max_tokens: int = 512) -> str | None:
+        """Lightweight completion for context-shave extracts (no review schema)."""
+        if not self.api_key:
+            return None
+        messages = [
+            {
+                "role": "system",
+                "content": "Return JSON only. No markdown fences.",
+            },
+            {"role": "user", "content": prompt},
+        ]
+        est = self._estimate_message_tokens(messages)
+        cap = self._cap_max_tokens(est, max_tokens)
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}",
+        }
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": 0.1,
+            "max_tokens": cap,
+        }
+        response = post_with_retry(
+            self.endpoint, json=payload, headers=headers, timeout=60, max_retries=1
+        )
+        data = response.json()
+        return data.get("choices", [{}])[0].get("message", {}).get("content", "")
+
     def _timeout_result(self, start_time: float) -> ReviewResult:
         return ReviewResult(
             summary="Groq request timed out - consider using a smaller diff",

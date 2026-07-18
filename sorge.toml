@@ -39,6 +39,10 @@ small_pr_threshold = 5000
 medium_pr_threshold = 120000
 large_pr_threshold = 120000
 chunk_budget = 100000
+# Gemini-dead fallback only — happy path unchanged when Gemini is usable
+context_shave_enabled = true
+context_shave_max_extracts = 12
+context_shave_slice_budget = 3500
 
 [quota]
 gemini_rpd = 20

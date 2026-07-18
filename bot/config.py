@@ -81,6 +81,21 @@ class RoutingConfig(BaseModel):
     medium_pr_threshold: int = Field(default=120000, description="Max tokens for medium PR (OpenRouter)")
     large_pr_threshold: int = Field(default=120000, description="Min tokens for large PR (Gemini)")
     chunk_budget: int = Field(default=100000, description="Target tokens per chunk when splitting")
+    context_shave_enabled: bool = Field(
+        default=True,
+        description=(
+            "Gemini-dead fallback only: build a virtual context pool (shavings) "
+            "so Groq/OpenRouter can review oversized PRs. Never engages while Gemini is usable."
+        ),
+    )
+    context_shave_max_extracts: int = Field(
+        default=12,
+        description="Max LLM extract calls per run when Layer-0 shavings are thin",
+    )
+    context_shave_slice_budget: int = Field(
+        default=3500,
+        description="Diff tokens per shave slice (before prompt overhead)",
+    )
 
 
 class QuotaConfig(BaseModel):
