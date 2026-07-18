@@ -11,6 +11,8 @@ import json
 import re
 from pathlib import Path
 
+from loguru import logger
+
 from bot.diff_parser import ParsedDiff
 
 # Added-line import extractors (JS/TS/Python).
@@ -21,9 +23,23 @@ _JS_SIDE_RE = re.compile(r"""^\+\s*import\s+['"]([^'"]+)['"]""")
 _JS_REQUIRE_RE = re.compile(
     r"""^\+\s*(?:const|let|var)\s+\w+\s*=\s*require\(\s*['"]([^'"]+)['"]\s*\)"""
 )
-_PY_IMPORT_RE = re.compile(
-    r"^\+\s*(?:from\s+([\w.]+)\s+import|import\s+([\w.]+))"
+_JS_ISH_RE = re.compile(
+    r"""^\+\s*import\s+(?:type\b|[\w*{].*\s+from\s+['"]|['"])"""
 )
+_PY_IMPORT_RE = re.compile(
+    r"^\+\s*(?:from\s+([\w.]+)\s+import|import\s+([\w.]+))(?:\s*$|\s*[;#])"
+)
+
+# Node core modules (bare + node: protocol). Keep compact — prefix rules cover most.
+_NODE_BUILTINS = frozenset({
+    "assert", "async_hooks", "buffer", "child_process", "cluster", "console",
+    "constants", "crypto", "dgram", "diagnostics_channel", "dns", "domain",
+    "events", "fs", "http", "http2", "https", "inspector", "module", "net",
+    "os", "path", "perf_hooks", "process", "punycode", "querystring",
+    "readline", "repl", "stream", "string_decoder", "sys", "timers", "tls",
+    "trace_events", "tty", "url", "util", "v8", "vm", "wasi", "worker_threads",
+    "zlib", "test",
+})
 
 
 def load_declared_dependencies(repo_root: Path) -> set[str]:
@@ -106,7 +122,8 @@ def extract_imported_packages(diff: ParsedDiff) -> list[str]:
             if m:
                 candidates.append(m.group(1))
                 js_hit = True
-        if not js_hit:
+        # Don't let Python `import X` match JS/TS (`import type`, `import X from "..."`).
+        if not js_hit and not _JS_ISH_RE.match(line):
             m = _PY_IMPORT_RE.match(line)
             if m:
                 candidates.append(m.group(1) or m.group(2) or "")
@@ -125,8 +142,8 @@ def _normalize_import_package(raw: str) -> str | None:
     name = (raw or "").strip()
     if not name or name.startswith(".") or name.startswith("/"):
         return None
-    # Node builtins / common relative-ish noise
-    if name in {"fs", "path", "os", "util", "http", "https", "crypto", "url"}:
+    # node: protocol builtins (node:fs, node:test, …)
+    if name.startswith("node:"):
         return None
     if name.startswith("@"):
         parts = name.split("/")
@@ -134,7 +151,10 @@ def _normalize_import_package(raw: str) -> str | None:
             return f"{parts[0]}/{parts[1]}"
         return name
     # package subpath: lodash/get → lodash; pdf-parse stays
-    return name.split("/")[0]
+    root = name.split("/")[0]
+    if root in _NODE_BUILTINS:
+        return None
+    return root
 
 
 def format_import_manifest_evidence(
@@ -147,15 +167,18 @@ def format_import_manifest_evidence(
     """Compact IMPORT_VS_MANIFEST block for REPOSITORY CONTEXT."""
     packages = extract_imported_packages(diff)[:max_packages]
     if not packages:
+        logger.info("IMPORT_VS_MANIFEST: skipped (no third-party imports in DIFF)")
         return ""
 
     declared = load_declared_dependencies(repo_root)
-    if not declared and not (Path(repo_root) / "package.json").is_file():
-        # No readable npm/python manifests — skip (don't invent evidence).
-        req = Path(repo_root) / "requirements.txt"
-        pyproject = Path(repo_root) / "pyproject.toml"
-        if not req.is_file() and not pyproject.is_file():
-            return ""
+    has_manifest = (
+        (Path(repo_root) / "package.json").is_file()
+        or (Path(repo_root) / "requirements.txt").is_file()
+        or (Path(repo_root) / "pyproject.toml").is_file()
+    )
+    if not declared and not has_manifest:
+        logger.info("IMPORT_VS_MANIFEST: skipped (no readable HEAD manifests)")
+        return ""
 
     declared_l = {n.lower(): n for n in declared}
     lines = [
@@ -163,6 +186,8 @@ def format_import_manifest_evidence(
         "imported in the DIFF. Do not claim a package is missing from package.json / "
         "requirements / pyproject when listed as declared here:",
     ]
+    declared_n = 0
+    missing_n = 0
     for pkg in packages:
         key = pkg.lower()
         # Python import foo_bar vs package foo-bar
@@ -170,10 +195,17 @@ def format_import_manifest_evidence(
         if key in declared_l or alt in declared_l or pkg in declared:
             canon = declared_l.get(key) or declared_l.get(alt) or pkg
             lines.append(f"  {pkg}: declared ({canon})")
+            declared_n += 1
         else:
             lines.append(f"  {pkg}: NOT declared on HEAD manifests")
+            missing_n += 1
 
     text = "\n".join(lines)
     if len(text) > max_chars:
         text = text[: max_chars - 20].rstrip() + "\n  …(truncated)"
+
+    logger.info(
+        f"IMPORT_VS_MANIFEST: injected {len(packages)} import(s) "
+        f"({declared_n} declared, {missing_n} missing) chars={len(text)}"
+    )
     return text
