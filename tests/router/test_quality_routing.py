@@ -133,8 +133,13 @@ def test_vacuous_high_score_needs_escalate_signal():
     from bot.scheduling.scheduler import ReviewScheduler
     from bot.schemas import ReviewResult
 
+    # Non-trivial source file: clean 10.0 should still look suspiciously empty.
     chunk = _chunk(files=["cli/agent/AgentWorker.js"], tokens=3461, lines_added=80)
-    scheduled = ScheduledChunk(chunk=chunk, priority=60, complexity=0.43)
+    scheduled = ScheduledChunk(
+        chunk=chunk,
+        priority=60,
+        complexity=complexity_score(chunk, prompt_overhead_tokens=2000),
+    )
     result = ReviewResult(
         summary="No critical issues",
         issues=[],
@@ -147,6 +152,61 @@ def test_vacuous_high_score_needs_escalate_signal():
     fake = SimpleNamespace(providers={"groq": object(), "gemini": object()})
     assert ReviewScheduler._is_vacuous_review(scheduled, result) is True
     assert ReviewScheduler._needs_escalate(fake, scheduled, "groq", result) is True
+
+
+def test_docs_clean_review_does_not_vacuous_escalate():
+    from types import SimpleNamespace
+
+    from bot.scheduling.complexity import expected_review_difficulty
+    from bot.scheduling.priority import prioritize_chunk
+    from bot.scheduling.scheduler import ReviewScheduler
+    from bot.schemas import ReviewResult
+
+    chunk = _chunk(
+        files=["docs/NEXT_PHASE.md", "README.md", "docs/ROADMAP.md"],
+        tokens=2570,
+        lines_added=174,
+        lines_deleted=10,
+    )
+    scheduled = ScheduledChunk(
+        chunk=chunk,
+        priority=prioritize_chunk(chunk),
+        complexity=complexity_score(chunk, prompt_overhead_tokens=2500),
+    )
+    result = ReviewResult(
+        summary="Docs look good",
+        issues=[],
+        recommendations=[],
+        score=10.0,
+        latency_ms=100,
+        model="groq",
+        review_type="groq",
+    )
+    fake = SimpleNamespace(providers={"groq": object(), "gemini": object()})
+    difficulty = expected_review_difficulty(
+        chunk, complexity=scheduled.complexity, priority=scheduled.priority
+    )
+    assert difficulty < 0.42
+    assert ReviewScheduler._is_vacuous_review(scheduled, result) is False
+    assert ReviewScheduler._needs_escalate(fake, scheduled, "groq", result) is False
+
+
+def test_auth_refactor_zero_issues_still_vacuous():
+    from bot.scheduling.complexity import expected_review_difficulty, is_surprisingly_empty_review
+    from bot.scheduling.priority import prioritize_chunk
+
+    chunk = _chunk(
+        files=["src/auth/middleware.py", "src/auth/jwt.py"],
+        tokens=900,
+        lines_added=120,
+    )
+    pri = prioritize_chunk(chunk)
+    cx = complexity_score(chunk, prompt_overhead_tokens=2000)
+    difficulty = expected_review_difficulty(chunk, complexity=cx, priority=pri)
+    assert difficulty >= 0.42
+    assert is_surprisingly_empty_review(
+        chunk, score=10.0, issue_count=0, complexity=cx, priority=pri
+    )
 
 
 def test_soften_incomplete_triage_caps_fake_perfect_score():

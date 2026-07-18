@@ -18,6 +18,7 @@ from bot.scheduling.complexity import (
     complexity_score,
     is_high_complexity,
     is_security_sensitive,
+    is_surprisingly_empty_review,
 )
 from bot.scheduling.health import HealthTracker
 from bot.scheduling.history import ProviderHistory
@@ -412,8 +413,6 @@ class ReviewScheduler:
             return "vacuous"
         if result.score < ESCALATE_SCORE_THRESHOLD:
             return "low_score"
-        if scheduled.chunk.estimated_tokens >= 2500 and not result.issues:
-            return "empty_large"
         return "escalate"
 
     def _ticket_from_pending(
@@ -547,12 +546,36 @@ class ReviewScheduler:
 
     @staticmethod
     def _is_vacuous_review(scheduled: ScheduledChunk, result: ReviewResult) -> bool:
-        """High score + zero issues on a non-trivial diff is usually under-review."""
-        if result.issues:
-            return False
-        if result.score < 8.5:
-            return False
-        return scheduled.chunk.estimated_tokens >= 1500
+        """High score + zero issues is vacuous only when a clean review is surprising.
+
+        Uses expected review difficulty (complexity, code ratio, priority, coupling,
+        semantic change density) — not raw token count — so prose/docs clean
+        reviews stay on Groq while suspiciously empty code reviews still escalate.
+        """
+        from bot.scheduling.complexity import expected_review_difficulty
+
+        empty = is_surprisingly_empty_review(
+            scheduled.chunk,
+            score=float(result.score),
+            issue_count=len(result.issues or []),
+            complexity=scheduled.complexity,
+            priority=scheduled.priority,
+        )
+        if empty or (not result.issues and float(result.score) >= 8.5):
+            difficulty = expected_review_difficulty(
+                scheduled.chunk,
+                complexity=scheduled.complexity,
+                priority=scheduled.priority,
+            )
+            logger.info(
+                f"Vacuous check: empty={empty} score={result.score:.1f} "
+                f"issues={len(result.issues or [])} "
+                f"difficulty={difficulty:.3f} "
+                f"complexity={scheduled.complexity:.2f} "
+                f"priority={scheduled.priority} "
+                f"tokens={scheduled.chunk.estimated_tokens}"
+            )
+        return empty
 
     def _needs_escalate(
         self,
@@ -572,8 +595,6 @@ class ReviewScheduler:
         if result.score < ESCALATE_SCORE_THRESHOLD:
             return True
         if ReviewScheduler._is_vacuous_review(scheduled, result):
-            return True
-        if scheduled.chunk.estimated_tokens >= 2500 and not result.issues:
             return True
         return False
 
