@@ -101,7 +101,7 @@ jobs:
             echo "PR_NUMBER=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
             echo "REPO_OWNER=${FULL_REPO%%/*}" >> "$GITHUB_OUTPUT"
             echo "REPO_NAME=${FULL_REPO##*/}" >> "$GITHUB_OUTPUT"
-            if [ "$FORCE" = "true" ]; then
+            if [ "$FORCE" = "true" ] || [ "${{ inputs.force_context_shave_smoke }}" = "true" ]; then
               echo "FORCE_FLAG=--force" >> "$GITHUB_OUTPUT"
             else
               echo "FORCE_FLAG=" >> "$GITHUB_OUTPUT"
