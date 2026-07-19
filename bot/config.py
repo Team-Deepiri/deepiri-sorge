@@ -135,6 +135,13 @@ class ClaimVerifierConfig(BaseModel):
     )
 
 
+class FindingAdjudicatorConfig(BaseModel):
+    enabled: bool = Field(
+        default=True,
+        description="LLM post-pass to drop speculative nits; keep actionable scale gaps",
+    )
+
+
 class ProviderRuntimeConfig(BaseModel):
     rpm: float = Field(default=30.0, description="Requests per minute token-bucket rate")
     max_inflight: int = Field(default=1, description="Max concurrent calls to this provider")
@@ -195,6 +202,9 @@ class Config(BaseModel):
     cache: CacheConfig = Field(default_factory=CacheConfig)
     repo_context: RepoContextConfig = Field(default_factory=RepoContextConfig)
     claim_verifier: ClaimVerifierConfig = Field(default_factory=ClaimVerifierConfig)
+    finding_adjudicator: FindingAdjudicatorConfig = Field(
+        default_factory=FindingAdjudicatorConfig
+    )
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
 

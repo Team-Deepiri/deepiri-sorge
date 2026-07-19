@@ -11,6 +11,7 @@ from loguru import logger
 from bot.claim_verifier import ClaimVerifier
 from bot.comment_poster import CommentPoster
 from bot.config import Config
+from bot.finding_adjudicator import FindingAdjudicator
 from bot.context_shaver import ContextShaver, should_engage_context_shave
 from bot.decision_engine import Action, DecisionEngine
 from bot.diff_parser import DiffParser
@@ -407,6 +408,18 @@ def main() -> None:
             f"ClaimVerifier: {before} issues in → {len(review_result.issues)} out "
             f"({suppressed} suppressed)"
         )
+
+    if review_result and config.finding_adjudicator.enabled:
+        before = len(review_result.issues)
+        review_result = FindingAdjudicator().adjudicate_result(
+            review_result,
+            repo_root=repo_root,
+        )
+        changed = before - len(review_result.issues)
+        if changed:
+            logger.info(
+                f"FindingAdjudicator: {before} issues in → {len(review_result.issues)} out"
+            )
 
     if args.pr_number and args.repo and not args.dry_run:
         comment_id = CommentPoster(github_token).post_review(
