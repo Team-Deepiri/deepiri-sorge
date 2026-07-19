@@ -294,6 +294,13 @@ class CommentPoster:
                     f"- Claim verifier: suppressed {suppressed} structural "
                     "false-positive(s) against PR-head symbol map"
                 )
+            adj_meta = routing_meta.get("finding_adjudicator") or {}
+            adj_dropped = adj_meta.get("dropped", 0)
+            adj_demoted = adj_meta.get("demoted", 0)
+            if adj_dropped or adj_demoted:
+                lines.append(
+                    f"- Finding adjudicator: dropped {adj_dropped}, demoted {adj_demoted}"
+                )
             sched = routing_meta.get("scheduler") or {}
             if sched:
                 cache_hits = sched.get("cache_hits", 0)

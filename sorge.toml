@@ -67,6 +67,10 @@ max_chars = 2800
 enabled = true
 include_symbol_index = true
 max_index_chars = 2400
+
+[finding_adjudicator]
+enabled = true
+
 [scheduler]
 wall_clock_sec = 720
 max_workers = 4
