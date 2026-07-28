@@ -48,6 +48,8 @@ class RunContext:
     max_capacity_wait_sec: float = 120.0
     capacity_waited_sec: float = 0.0
     semaphore: ProviderSemaphore | None = None
+    # When Gemini soft RPD is exhausted, only attempt this many free-tier chunks.
+    gemini_dead_max_chunks: int = 8
 
     def alive(self) -> bool:
         return time.monotonic() < self.deadline

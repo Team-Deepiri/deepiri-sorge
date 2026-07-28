@@ -477,3 +477,124 @@ def test_capacity_wait_budget_defers_without_burning_wall_clock():
     assert skipped
     assert meta.stop_reason == "providers_exhausted"
     assert any("capacity_waited" in s.reason or "no eligible" in s.reason for s in skipped)
+
+
+def test_quality_unusable_is_not_capacity_failure():
+    vacuous = ProviderResult(
+        ok=False,
+        provider="groq",
+        status_code=200,
+        error="truncated_vacuous_review",
+    )
+    assert vacuous.is_quality_unusable is True
+    assert vacuous.is_capacity_failure is False
+
+    rate = ProviderResult(ok=False, provider="openrouter", status_code=429, error="http_429")
+    assert rate.is_rate_limited is True
+    assert rate.is_capacity_failure is True
+    assert rate.is_quality_unusable is False
+
+
+def test_gemini_dead_caps_free_tier_chunks():
+    """When Gemini soft RPD is gone, only top-N chunks are attempted."""
+
+    class OkGroq:
+        name = "groq"
+        cost_tier = "free"
+        quality_prior = 0.9
+        nominal_latency_ms = 200.0
+        max_context_tokens = 100000
+
+        def advertise(self, run):
+            return ProviderStatus(
+                name="groq",
+                health=100.0,
+                rpm_remaining=30.0,
+                max_context_tokens=100000,
+                nominal_latency_ms=200.0,
+                quality_prior=0.9,
+            )
+
+        def review(self, chunk, run):
+            return ProviderResult(
+                ok=True,
+                provider="groq",
+                status_code=200,
+                result=ReviewResult(
+                    summary="ok",
+                    issues=[],
+                    recommendations=[],
+                    score=8.0,
+                    latency_ms=10.0,
+                    model="g",
+                    review_type="groq",
+                ),
+            )
+
+    class DeadGemini:
+        name = "gemini"
+        cost_tier = "free"
+        quality_prior = 0.85
+        nominal_latency_ms = 1000.0
+        max_context_tokens = 200000
+
+        def advertise(self, run):
+            return ProviderStatus(
+                name="gemini",
+                health=100.0,
+                rpm_remaining=10.0,
+                max_context_tokens=200000,
+                nominal_latency_ms=1000.0,
+                quality_prior=0.85,
+            )
+
+        def review(self, chunk, run):
+            raise AssertionError("gemini should not be called when soft RPD is 0")
+
+    from bot.scheduling.history import ProviderHistory
+    from bot.scheduling.run_context import ProviderRuntime, RunContext
+
+    quota = QuotaTracker(
+        limits={"gemini": 20, "gpt": 1000, "openrouter": 50},
+        used={"gemini": 20, "gpt": 0, "openrouter": 0},
+        sync_remote=False,
+    )
+    run = RunContext(
+        providers={
+            "groq": ProviderRuntime(
+                name="groq",
+                bucket=TokenBucket(30),
+                health=HealthTracker(100),
+                max_context_tokens=100000,
+                max_inflight=1,
+                nominal_latency_ms=200,
+                quality_prior=0.9,
+            ),
+            "gemini": ProviderRuntime(
+                name="gemini",
+                bucket=TokenBucket(10),
+                health=HealthTracker(100),
+                max_context_tokens=200000,
+                max_inflight=1,
+                nominal_latency_ms=1000,
+                quality_prior=0.85,
+            ),
+        },
+        quota=quota,
+        deadline=time.monotonic() + 600,
+        history=ProviderHistory(sync_remote=False),
+        gemini_dead_max_chunks=2,
+    )
+    sch = ReviewScheduler([OkGroq(), DeadGemini()], run, max_workers=1)
+    chunks = [
+        ReviewChunk(
+            files=[f"f{i}.py"],
+            parsed_diff=ParsedDiff(raw=f"+x{i}\n"),
+            estimated_tokens=50,
+        )
+        for i in range(5)
+    ]
+    results, skipped, meta = sch.run(chunks)
+    assert len(results) == 2
+    assert len(skipped) == 3
+    assert all("deferred_gemini_quota_exhausted" in s.reason for s in skipped)
