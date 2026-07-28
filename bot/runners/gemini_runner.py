@@ -124,3 +124,56 @@ class GeminiRunner(BaseRunner):
             model=self.model,
             tokens_used=None,
         )
+
+    def review_escalate_batch(self, tickets: list) -> dict[str, ReviewResult]:
+        """One Gemini request for N escalate tickets. Returns ticket_id → result."""
+        from bot.scheduling.escalate import build_multiplex_prompt, parse_multiplex_response
+
+        if not tickets:
+            return {}
+        if not self.api_key:
+            logger.error("No Google API key configured for multiplex escalate")
+            return {}
+
+        start_time = time.time()
+        url = f"{self.BASE_URL}/{self.model}:generateContent?key={self.api_key}"
+        prompt = build_multiplex_prompt(tickets)
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "temperature": 0.2,
+                "maxOutputTokens": 16384,
+                "topP": 0.95,
+                "topK": 40,
+                "responseMimeType": "application/json",
+            },
+        }
+        logger.info(f"Gemini multiplex escalate: {len(tickets)} ticket(s) model={self.model}")
+        try:
+            response = post_with_retry(
+                url,
+                json=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=180,
+                max_retries=1,
+            )
+        except requests.RequestException as e:
+            logger.error(f"Gemini multiplex failed: {e}")
+            return {}
+
+        latency_ms = (time.time() - start_time) * 1000
+        data = response.json()
+        content = (
+            data.get("candidates", [{}])[0]
+            .get("content", {})
+            .get("parts", [{}])[0]
+            .get("text", "")
+        )
+        tokens_used = data.get("usageMetadata", {}).get("totalTokenCount")
+        return parse_multiplex_response(
+            content,
+            tickets,
+            model=self.model,
+            latency_ms=latency_ms,
+            tokens_used=tokens_used,
+        )

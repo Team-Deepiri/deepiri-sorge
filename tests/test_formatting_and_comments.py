@@ -63,6 +63,7 @@ class TestCommentPosterFormatting:
 
         body = CommentPoster()._format_review_comment(review)
 
+        assert "<!-- sorge-review-anchor -->" in body
         assert "**Model:** heuristic (groq)" in body
         assert "### Summary\nSummary line\nextra details" in body
         assert ":warning: **src/service.py**:12" in body
@@ -122,3 +123,65 @@ class TestCommentPosterFormatting:
         assert "needs redesign" not in body
         assert "/sorge" in body
         assert "not a code review result" in body
+
+    def test_post_review_edits_preferred_or_posts_new(self, monkeypatch):
+        poster = CommentPoster("token")
+        calls: list[tuple] = []
+
+        def fake_upsert(repo, pr, body, *, preferred_comment_id=None, reuse_previous=False):
+            calls.append(("upsert", repo, pr, preferred_comment_id, reuse_previous))
+            return 99
+
+        def fake_post(repo, pr, body, commit_id=None):
+            calls.append(("post", repo, pr))
+            return 100
+
+        monkeypatch.setattr(poster, "upsert_comment", fake_upsert)
+        monkeypatch.setattr(poster, "post_comment", fake_post)
+
+        review = ReviewResult(
+            summary="ok",
+            issues=[],
+            recommendations=[],
+            score=8.0,
+            model="m",
+            latency_ms=1.0,
+            review_type="groq",
+        )
+        # No preferred id → new post (per-run hybrid; do not rewrite prior runs).
+        assert poster.post_review("org/r", 7, review) == 100
+        assert calls == [("post", "org/r", 7)]
+
+        calls.clear()
+        assert poster.post_review("org/r", 7, review, preferred_comment_id=55) == 99
+        assert calls == [("upsert", "org/r", 7, 55, False)]
+
+        calls.clear()
+        assert poster.post_review("org/r", 7, review, edit_existing=False) == 100
+        assert calls == [("post", "org/r", 7)]
+
+    def test_upsert_comment_skips_previous_by_default(self, monkeypatch):
+        poster = CommentPoster("token")
+        monkeypatch.setattr(poster, "get_previous_review", lambda *a, **k: 11)
+        edited: list[int] = []
+
+        def fake_update(repo, cid, body):
+            edited.append(cid)
+            return True
+
+        monkeypatch.setattr(poster, "update_comment", fake_update)
+        monkeypatch.setattr(poster, "post_comment", lambda *a, **k: 100)
+
+        assert poster.upsert_comment("org/r", 1, "## Sorge AI Code Review\n\nx") == 100
+        assert edited == []
+
+        assert (
+            poster.upsert_comment(
+                "org/r",
+                1,
+                "## Sorge AI Code Review\n\nx",
+                preferred_comment_id=55,
+            )
+            == 55
+        )
+        assert edited == [55]

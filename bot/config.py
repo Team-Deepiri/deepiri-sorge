@@ -81,6 +81,21 @@ class RoutingConfig(BaseModel):
     medium_pr_threshold: int = Field(default=120000, description="Max tokens for medium PR (OpenRouter)")
     large_pr_threshold: int = Field(default=120000, description="Min tokens for large PR (Gemini)")
     chunk_budget: int = Field(default=100000, description="Target tokens per chunk when splitting")
+    context_shave_enabled: bool = Field(
+        default=True,
+        description=(
+            "Gemini-dead fallback only: build a virtual context pool (shavings) "
+            "so Groq/OpenRouter can review oversized PRs. Never engages while Gemini is usable."
+        ),
+    )
+    context_shave_max_extracts: int = Field(
+        default=12,
+        description="Max LLM extract calls per run when Layer-0 shavings are thin",
+    )
+    context_shave_slice_budget: int = Field(
+        default=3500,
+        description="Diff tokens per shave slice (before prompt overhead)",
+    )
 
 
 class QuotaConfig(BaseModel):
@@ -120,6 +135,13 @@ class ClaimVerifierConfig(BaseModel):
     )
 
 
+class FindingAdjudicatorConfig(BaseModel):
+    enabled: bool = Field(
+        default=True,
+        description="LLM post-pass to drop speculative nits; keep actionable scale gaps",
+    )
+
+
 class ProviderRuntimeConfig(BaseModel):
     rpm: float = Field(default=30.0, description="Requests per minute token-bucket rate")
     max_inflight: int = Field(default=1, description="Max concurrent calls to this provider")
@@ -153,6 +175,19 @@ class SchedulerConfig(BaseModel):
     partial_on_exhausted: bool = Field(
         default=True, description="Return partial review when providers are exhausted"
     )
+    max_capacity_wait_sec: float = Field(
+        default=120.0,
+        description=(
+            "Max seconds spent sleeping for provider cooldowns before early-deferring "
+            "with NO_PROVIDER (still allows attempts/retries within this budget)"
+        ),
+    )
+    auto_retry_delay_min_sec: int = Field(
+        default=60, description="Min delay before one automatic /sorge retry after rate-limit"
+    )
+    auto_retry_delay_max_sec: int = Field(
+        default=120, description="Max delay before one automatic /sorge retry after rate-limit"
+    )
 
 
 class Config(BaseModel):
@@ -167,6 +202,9 @@ class Config(BaseModel):
     cache: CacheConfig = Field(default_factory=CacheConfig)
     repo_context: RepoContextConfig = Field(default_factory=RepoContextConfig)
     claim_verifier: ClaimVerifierConfig = Field(default_factory=ClaimVerifierConfig)
+    finding_adjudicator: FindingAdjudicatorConfig = Field(
+        default_factory=FindingAdjudicatorConfig
+    )
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
 

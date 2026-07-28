@@ -1,24 +1,39 @@
 # Central dispatcher — triggered by GitHub App webhook (CF Worker) or manually.
 # Consumer repos need ZERO workflow YAML; install the Sorge GitHub App only.
+#
+# Modes (option A — one job):
+#   sorge-review / workflow_dispatch review → bot.main
+#   sorge-drain / schedule / workflow_dispatch drain → bot.drain
 
 name: Sorge Dispatch Review
 
 on:
   repository_dispatch:
-    types: [sorge-review]
+    types: [sorge-review, sorge-drain]
+  schedule:
+    # Backup drain if Worker cron is unavailable
+    - cron: "15 * * * *"
   workflow_dispatch:
     inputs:
-      repo:
-        description: "Target repo owner/name"
+      mode:
+        description: "review or drain"
         required: true
+        type: choice
+        options:
+          - review
+          - drain
+        default: review
+      repo:
+        description: "Target repo owner/name (review mode)"
+        required: false
         type: string
       pr_number:
-        description: "PR number"
-        required: true
+        description: "PR number (review mode)"
+        required: false
         type: number
       installation_id:
         description: "GitHub App installation ID"
-        required: true
+        required: false
         type: string
 
 permissions:
@@ -31,40 +46,75 @@ env:
   POETRY_VERSION: "1.8.2"
 
 jobs:
-  review:
-    name: Sorge Central Review
+  sorge:
+    name: Sorge Central
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
     steps:
-      - name: Resolve dispatch inputs
+      - name: Resolve mode and inputs
         id: inputs
         run: |
-          if [ -n "${{ github.event.client_payload.repo }}" ]; then
-            FULL_REPO="${{ github.event.client_payload.repo }}"
-            echo "PR_NUMBER=${{ github.event.client_payload.pr_number }}" >> "$GITHUB_OUTPUT"
-            echo "INSTALLATION_ID=${{ github.event.client_payload.installation_id }}" >> "$GITHUB_OUTPUT"
-            FORCE="${{ github.event.client_payload.force }}"
-          else
-            FULL_REPO="${{ inputs.repo }}"
-            echo "PR_NUMBER=${{ inputs.pr_number }}" >> "$GITHUB_OUTPUT"
-            echo "INSTALLATION_ID=${{ inputs.installation_id }}" >> "$GITHUB_OUTPUT"
-            FORCE=""
+          MODE="review"
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            MODE="drain"
+          elif [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            if [ "${{ github.event.action }}" = "sorge-drain" ]; then
+              MODE="drain"
+            else
+              MODE="review"
+            fi
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            MODE="${{ inputs.mode }}"
           fi
+          echo "MODE=$MODE" >> "$GITHUB_OUTPUT"
 
-          echo "REPO=${FULL_REPO}" >> "$GITHUB_OUTPUT"
-          echo "REPO_OWNER=${FULL_REPO%%/*}" >> "$GITHUB_OUTPUT"
-          echo "REPO_NAME=${FULL_REPO##*/}" >> "$GITHUB_OUTPUT"
-
-          if [ "$FORCE" = "true" ]; then
-            echo "FORCE_FLAG=--force" >> "$GITHUB_OUTPUT"
+          if [ "$MODE" = "review" ]; then
+            if [ -n "${{ github.event.client_payload.repo }}" ]; then
+              FULL_REPO="${{ github.event.client_payload.repo }}"
+              PR_NUMBER="${{ github.event.client_payload.pr_number }}"
+              echo "INSTALLATION_ID=${{ github.event.client_payload.installation_id }}" >> "$GITHUB_OUTPUT"
+              FORCE="${{ github.event.client_payload.force }}"
+              AUTO_RETRY="${{ github.event.client_payload.auto_retry }}"
+            else
+              FULL_REPO="${{ inputs.repo }}"
+              PR_NUMBER="${{ inputs.pr_number }}"
+              echo "INSTALLATION_ID=${{ inputs.installation_id }}" >> "$GITHUB_OUTPUT"
+              FORCE=""
+              AUTO_RETRY=""
+            fi
+            if [ -z "$FULL_REPO" ] || [ -z "$PR_NUMBER" ]; then
+              echo "Review mode requires repo + pr_number" >&2
+              exit 1
+            fi
+            echo "REPO=${FULL_REPO}" >> "$GITHUB_OUTPUT"
+            echo "PR_NUMBER=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
+            echo "REPO_OWNER=${FULL_REPO%%/*}" >> "$GITHUB_OUTPUT"
+            echo "REPO_NAME=${FULL_REPO##*/}" >> "$GITHUB_OUTPUT"
+            if [ "$FORCE" = "true" ]; then
+              echo "FORCE_FLAG=--force" >> "$GITHUB_OUTPUT"
+            else
+              echo "FORCE_FLAG=" >> "$GITHUB_OUTPUT"
+            fi
+            if [ "$AUTO_RETRY" = "true" ]; then
+              echo "AUTO_RETRY_FLAG=--auto-retry" >> "$GITHUB_OUTPUT"
+            else
+              echo "AUTO_RETRY_FLAG=" >> "$GITHUB_OUTPUT"
+            fi
           else
+            echo "REPO=" >> "$GITHUB_OUTPUT"
+            echo "REPO_OWNER=Team-Deepiri" >> "$GITHUB_OUTPUT"
+            echo "REPO_NAME=deepiri-sorge" >> "$GITHUB_OUTPUT"
+            echo "PR_NUMBER=drain" >> "$GITHUB_OUTPUT"
+            echo "INSTALLATION_ID=${{ inputs.installation_id }}" >> "$GITHUB_OUTPUT"
             echo "FORCE_FLAG=" >> "$GITHUB_OUTPUT"
+            echo "AUTO_RETRY_FLAG=" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Generate App installation token
         id: app-token
-        uses: actions/create-github-app-token@v1
+        if: steps.inputs.outputs.MODE == 'review'
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.SORGE_APP_ID }}
           private-key: ${{ secrets.SORGE_APP_PRIVATE_KEY }}
@@ -72,29 +122,76 @@ jobs:
           repositories: ${{ steps.inputs.outputs.REPO_NAME }}
 
       - name: Debug token scope
+        if: steps.inputs.outputs.MODE == 'review'
         run: |
           echo "Installation ID passed in: '${{ steps.inputs.outputs.INSTALLATION_ID }}'"
           echo "Installation ID token action reports: '${{ steps.app-token.outputs.installation-id }}'"
           echo "Repo we're posting to: '${{ steps.inputs.outputs.REPO }}'"
-          echo "Owner used for token scope: '${{ steps.inputs.outputs.REPO_OWNER }}'"
-          echo "Repo name used for token scope: '${{ steps.inputs.outputs.REPO_NAME }}'"
 
+      # Per-run hybrid: always POST a new Starting… comment (unless auto-retry
+      # reuses the rate-limit comment from the prior attempt). The review step
+      # edits that same comment_id into the final body — never older runs.
       - name: Post starting message
+        id: starting
+        if: steps.inputs.outputs.MODE == 'review'
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ steps.inputs.outputs.REPO }}
+          PR_NUMBER: ${{ steps.inputs.outputs.PR_NUMBER }}
+          EXISTING_COMMENT_ID: ${{ github.event.client_payload.comment_id }}
+          AUTO_RETRY: ${{ github.event.client_payload.auto_retry }}
         run: |
-          curl -sS -X POST \
-            -w "\nHTTP_STATUS:%{http_code}\n" \
-            -H "Authorization: Bearer $GITHUB_TOKEN" \
-            -H "Accept: application/vnd.github.v3+json" \
-            "https://api.github.com/repos/${{ steps.inputs.outputs.REPO }}/issues/${{ steps.inputs.outputs.PR_NUMBER }}/comments" \
-            -d '{"body": "Starting AI review..."}'
+          python3 <<'PY'
+          import json, os, urllib.request
+
+          token = os.environ["GITHUB_TOKEN"]
+          repo = os.environ["REPO"]
+          pr = os.environ["PR_NUMBER"]
+          existing = (os.environ.get("EXISTING_COMMENT_ID") or "").strip()
+          auto_retry = (os.environ.get("AUTO_RETRY") or "").lower() == "true"
+          out = os.environ["GITHUB_OUTPUT"]
+
+          if auto_retry and existing.isdigit():
+              with open(out, "a") as f:
+                  f.write(f"COMMENT_ID={existing}\n")
+              print(f"Auto-retry reusing comment_id={existing}")
+              raise SystemExit(0)
+
+          anchor = "<!-- sorge-review-anchor -->"
+          body = (
+              f"{anchor}\n"
+              "## Sorge AI Code Review\n\n"
+              "_Starting AI review…_\n"
+          )
+          api = "https://api.github.com"
+          headers = {
+              "Authorization": f"Bearer {token}",
+              "Accept": "application/vnd.github.v3+json",
+              "X-GitHub-Api-Version": "2022-11-28",
+              "Content-Type": "application/json",
+              "User-Agent": "deepiri-sorge",
+          }
+          data = json.dumps({"body": body}).encode()
+          req = urllib.request.Request(
+              f"{api}/repos/{repo}/issues/{pr}/comments",
+              data=data,
+              headers=headers,
+              method="POST",
+          )
+          with urllib.request.urlopen(req) as resp:
+              created = json.load(resp)
+          cid = created["id"]
+          with open(out, "a") as f:
+              f.write(f"COMMENT_ID={cid}\n")
+          print(f"Posted starting message id={cid}")
+          PY
 
       - name: Checkout sorge
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Resolve PR head SHA
         id: pr-head
+        if: steps.inputs.outputs.MODE == 'review'
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
@@ -108,7 +205,8 @@ jobs:
           echo "PR head SHA: $HEAD_SHA"
 
       - name: Checkout target repository
-        uses: actions/checkout@v4
+        if: steps.inputs.outputs.MODE == 'review'
+        uses: actions/checkout@v6
         with:
           repository: ${{ steps.inputs.outputs.REPO }}
           path: target-repo
@@ -116,16 +214,22 @@ jobs:
           fetch-depth: 1
           token: ${{ steps.app-token.outputs.token }}
 
-      - name: Restore provider history cache
-        uses: actions/cache@v4
+      - name: Restore provider + escalate ledger cache
+        uses: actions/cache@v5
         with:
-          path: ~/.cache/sorge/provider_stats.json
-          key: sorge-provider-stats-v1-${{ github.run_id }}
+          path: |
+            ~/.cache/sorge/provider_stats.json
+            ~/.cache/sorge/escalate_ledger.json
+            ~/.cache/sorge/quota_daily.json
+          key: sorge-runtime-v4-${{ github.run_id }}
           restore-keys: |
+            sorge-runtime-v4-
+            sorge-runtime-v3-
+            sorge-runtime-v2-
             sorge-provider-stats-v1-
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -135,7 +239,7 @@ jobs:
           python -m pip install "poetry==${{ env.POETRY_VERSION }}"
 
       - name: Cache Poetry virtualenv
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         id: poetry-cache
         with:
           path: ~/.cache/pypoetry
@@ -146,13 +250,28 @@ jobs:
       - name: Install dependencies
         run: poetry install --no-interaction --no-ansi
 
+      - name: Jitter start (desync concurrent /sorge bursts)
+        if: steps.inputs.outputs.MODE == 'review'
+        run: |
+          # Spread simultaneous repository_dispatch jobs across 0–3s so free-tier
+          # RPM bursts don't all hit Groq/Gemini/OpenRouter in the same millisecond.
+          DELAY_MS=$((RANDOM % 3000))
+          echo "Dispatch jitter: sleeping ${DELAY_MS}ms"
+          python3 -c "import time; time.sleep(${DELAY_MS}/1000.0)"
+
       - name: Run AI review
+        if: steps.inputs.outputs.MODE == 'review'
         env:
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           SORGE_APP_ID: ${{ secrets.SORGE_APP_ID }}
           SORGE_APP_PRIVATE_KEY: ${{ secrets.SORGE_APP_PRIVATE_KEY }}
+          SORGE_LEDGER_URL: ${{ secrets.SORGE_LEDGER_URL }}
+          SORGE_LEDGER_SECRET: ${{ secrets.SORGE_LEDGER_SECRET }}
+          SORGE_HEAD_SHA: ${{ steps.pr-head.outputs.HEAD_SHA }}
+          SORGE_COMMENT_ID: ${{ steps.starting.outputs.COMMENT_ID }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -o pipefail
           INSTALL_FLAG=""
@@ -165,20 +284,42 @@ jobs:
             CONFIG_FLAG="--config target-repo/sorge.toml"
           fi
 
+          COMMENT_FLAG=""
+          if [ -n "${{ steps.starting.outputs.COMMENT_ID }}" ]; then
+            COMMENT_FLAG="--comment-id ${{ steps.starting.outputs.COMMENT_ID }}"
+          fi
+
           poetry run python -m bot.main \
             --repo "${{ steps.inputs.outputs.REPO }}" \
             --pr-number "${{ steps.inputs.outputs.PR_NUMBER }}" \
             --repo-root target-repo \
             $INSTALL_FLAG \
             $CONFIG_FLAG \
+            $COMMENT_FLAG \
             ${{ steps.inputs.outputs.FORCE_FLAG }} \
+            ${{ steps.inputs.outputs.AUTO_RETRY_FLAG }} \
             --mode auto \
             --verbose | tee review-output.json
 
-      - name: Upload review artifact
+      - name: Run escalate drain
+        if: steps.inputs.outputs.MODE == 'drain'
+        env:
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          SORGE_APP_ID: ${{ secrets.SORGE_APP_ID }}
+          SORGE_APP_PRIVATE_KEY: ${{ secrets.SORGE_APP_PRIVATE_KEY }}
+          SORGE_LEDGER_URL: ${{ secrets.SORGE_LEDGER_URL }}
+          SORGE_LEDGER_SECRET: ${{ secrets.SORGE_LEDGER_SECRET }}
+        run: |
+          set -o pipefail
+          poetry run python -m bot.drain --limit 8 --verbose | tee drain-output.json
+
+      - name: Upload artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
-          name: review-${{ steps.inputs.outputs.PR_NUMBER }}
-          path: review-output.json
+          name: sorge-${{ steps.inputs.outputs.MODE }}-${{ steps.inputs.outputs.PR_NUMBER || 'drain' }}
+          path: |
+            review-output.json
+            drain-output.json
           retention-days: 7
+          if-no-files-found: ignore

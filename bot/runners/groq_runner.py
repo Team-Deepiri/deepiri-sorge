@@ -10,9 +10,13 @@ from loguru import logger
 
 from bot.config import CacheConfig
 from bot.diff_parser import ParsedDiff
+from bot.prompts import load_groq_bug_detector_template
 from bot.runners.base import BaseRunner, ReviewResult
 from bot.schemas import ReviewIssue
 from bot.utils.http_retry import post_with_retry
+
+# Cap repo context chars so input+output stay inside Groq's ~8k window.
+_GROQ_CONTEXT_CHAR_CAP = 6_000
 
 
 class GroqRunner(BaseRunner):
@@ -20,6 +24,13 @@ class GroqRunner(BaseRunner):
 
     DEFAULT_MODEL = "openai/gpt-oss-120b"
     DEFAULT_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
+    # Groq free tier validates input + max_tokens against ~8k total context.
+    CONTEXT_TOKEN_LIMIT = 8192
+    CONTEXT_SAFETY_BUFFER = 192
+    HEADROOM_SAFETY = 0.85
+    MIN_OUTPUT_TOKENS = 1024
+    DESIRED_MAX_TOKENS = 4096
+    RETRY_MAX_TOKENS = 6144
 
     def __init__(
         self,
@@ -35,6 +46,27 @@ class GroqRunner(BaseRunner):
         self._last_http_status: int | None = None
         self._last_retry_after: float | None = None
         self._last_timed_out: bool = False
+        self._effective_input_tokens: int | None = None
+        self._last_max_tokens: int | None = None
+
+    @staticmethod
+    def _estimate_message_tokens(messages: list[dict[str, str]]) -> int:
+        chars = sum(len(m.get("content") or "") for m in messages)
+        return max(1, chars // 4)
+
+    def _input_token_estimate(self, messages: list[dict[str, str]]) -> int:
+        if self._effective_input_tokens is not None and self._effective_input_tokens > 0:
+            return self._effective_input_tokens
+        return self._estimate_message_tokens(messages)
+
+    @classmethod
+    def _cap_max_tokens(cls, est_input: int, desired: int) -> int:
+        """Cap output so input + max_tokens stays within Groq context (* 0.85 safety)."""
+        raw_headroom = cls.CONTEXT_TOKEN_LIMIT - est_input - cls.CONTEXT_SAFETY_BUFFER
+        headroom = int(raw_headroom * cls.HEADROOM_SAFETY)
+        if headroom < cls.MIN_OUTPUT_TOKENS:
+            return max(256, headroom)
+        return max(cls.MIN_OUTPUT_TOKENS, min(desired, headroom))
 
     def _run_review(self, diff: ParsedDiff) -> ReviewResult | None:
         if not self.api_key:
@@ -45,6 +77,7 @@ class GroqRunner(BaseRunner):
         self._last_http_status = None
         self._last_retry_after = None
         self._last_timed_out = False
+        self._last_max_tokens = None
 
         try:
             return self._call_api(diff, start_time)
@@ -65,30 +98,82 @@ class GroqRunner(BaseRunner):
                         self._last_retry_after = None
             return None
 
+    def _build_prompt(self, diff: ParsedDiff) -> str:
+        template = load_groq_bug_detector_template()
+        context_block = self._repo_context or (
+            "(No repository context — note reuse risks if the PR adds helpers already in repo.)"
+        )
+        if len(context_block) > _GROQ_CONTEXT_CHAR_CAP:
+            context_block = (
+                context_block[:_GROQ_CONTEXT_CHAR_CAP]
+                + "\n\n… _(repo context truncated for Groq context window)_"
+            )
+
+        return f"""{template}
+
+---
+
+## DIFF (primary review target)
+Files changed: {", ".join(diff.files)}
+Total lines: +{diff.lines_added} -{diff.lines_deleted}
+
+```diff
+{diff.raw}
+```
+
+---
+
+## REPOSITORY CONTEXT
+{context_block}
+"""
+
+    def _build_messages(self, diff: ParsedDiff) -> list[dict[str, str]]:
+        return [
+            {
+                "role": "system",
+                "content": (
+                    "You are a fast production bug detector. Respond with a single raw JSON "
+                    "object only. No markdown fences. Max 5 hard findings; ignore style nits."
+                ),
+            },
+            {"role": "user", "content": self._build_prompt(diff)},
+        ]
+
     def _call_api(self, diff: ParsedDiff, start_time: float) -> ReviewResult:
+        messages = self._build_messages(diff)
+        est_input = self._input_token_estimate(messages)
+        first_cap = self._cap_max_tokens(est_input, self.DESIRED_MAX_TOKENS)
+        result, truncated = self._complete(messages, start_time, first_cap)
+        if truncated and result.parse_warning:
+            retry_cap = self._cap_max_tokens(est_input, self.RETRY_MAX_TOKENS)
+            if retry_cap > first_cap:
+                logger.warning(
+                    f"Groq truncated at max_tokens={first_cap} with parse_warning; "
+                    f"retrying once with max_tokens={retry_cap}"
+                )
+                result, _ = self._complete(messages, start_time, retry_cap)
+        return result
+
+    def _complete(
+        self,
+        messages: list[dict[str, str]],
+        start_time: float,
+        max_tokens: int,
+    ) -> tuple[ReviewResult, bool]:
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.api_key}",
         }
+        self._last_max_tokens = max_tokens
 
-        # Prompt already requires raw JSON — skip response_format (often rejected).
         payload = {
             "model": self.model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a code review bot. Respond with a single raw JSON object only. "
-                        "No markdown fences, no prose before or after the JSON."
-                    ),
-                },
-                {"role": "user", "content": self._build_prompt(diff)},
-            ],
+            "messages": messages,
             "temperature": 0.2,
-            "max_tokens": 2048,
+            "max_tokens": max_tokens,
         }
 
-        logger.debug(f"Calling Groq with model: {self.model}")
+        logger.debug(f"Calling Groq with model: {self.model} (max_tokens={max_tokens})")
 
         response = post_with_retry(
             self.endpoint, json=payload, headers=headers, timeout=120, max_retries=1
@@ -98,19 +183,53 @@ class GroqRunner(BaseRunner):
         data = response.json()
         choice = data.get("choices", [{}])[0]
         content = choice.get("message", {}).get("content", "")
-        self._last_raw_response = content  # store for salvage on parse failure
-        if choice.get("finish_reason") == "length":
+        self._last_raw_response = content
+        truncated = choice.get("finish_reason") == "length"
+        if truncated:
             logger.warning("Groq response truncated (finish_reason=length)")
         tokens_used = data.get("usage", {}).get("total_tokens")
 
         parsed = self._parse_response(content)
-
-        return self._build_result(
+        result = self._build_result(
             parsed,
             latency_ms=latency_ms,
             tokens_used=tokens_used,
             review_type="groq",
         )
+        # Truncated + empty/high score is not a trustworthy all-clear.
+        if truncated and not result.issues and result.score >= 8.5:
+            result.parse_warning = result.parse_warning or "truncated_vacuous_review"
+            result.score = min(float(result.score), 7.0)
+        return result, truncated
+
+    def complete_user_prompt(self, prompt: str, *, max_tokens: int = 512) -> str | None:
+        """Lightweight completion for context-shave extracts (no review schema)."""
+        if not self.api_key:
+            return None
+        messages = [
+            {
+                "role": "system",
+                "content": "Return JSON only. No markdown fences.",
+            },
+            {"role": "user", "content": prompt},
+        ]
+        est = self._estimate_message_tokens(messages)
+        cap = self._cap_max_tokens(est, max_tokens)
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}",
+        }
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": 0.1,
+            "max_tokens": cap,
+        }
+        response = post_with_retry(
+            self.endpoint, json=payload, headers=headers, timeout=60, max_retries=1
+        )
+        data = response.json()
+        return data.get("choices", [{}])[0].get("message", {}).get("content", "")
 
     def _timeout_result(self, start_time: float) -> ReviewResult:
         return ReviewResult(
@@ -123,7 +242,10 @@ class GroqRunner(BaseRunner):
                     suggestion="Split large PRs into smaller changes",
                 )
             ],
-            recommendations=["Split large PRs into smaller changes", "Use a smaller model for quicker feedback"],
+            recommendations=[
+                "Split large PRs into smaller changes",
+                "Use a smaller model for quicker feedback",
+            ],
             score=5.0,
             latency_ms=(time.time() - start_time) * 1000,
             model=self.model,

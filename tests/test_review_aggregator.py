@@ -68,3 +68,36 @@ def test_rate_limit_only_skips_are_not_quality_zero():
     assert merged.issues == []
     assert "not a code-quality score" in merged.summary
     assert any("/sorge" in r for r in merged.recommendations)
+    assert merged.routing_meta.get("final_state") == "NO_PROVIDER_AVAILABLE"
+
+
+def test_empty_response_after_stampede_is_not_quality_zero():
+    """emotion#81 failure mode: truncated/empty after 429s must not invent 0.0 redesign."""
+    chunk = ReviewChunk(
+        files=["cli/agent/AgentWorker.js"],
+        parsed_diff=ParsedDiff(raw="+x\n"),
+        estimated_tokens=3461,
+    )
+    skipped = [SkipRecord(chunk, "capacity:empty_response")]
+    merged = ReviewAggregator.merge(
+        [],
+        rung="scheduled",
+        skipped=skipped,
+        scheduler_meta={"retry_after_sec": 90, "stop_reason": None},
+    )
+    assert merged.review_type == "rate_limited"
+    assert merged.issues == []
+    assert "No automated review was generated" in merged.summary
+    assert merged.routing_meta.get("final_state") == "NO_PROVIDER_AVAILABLE"
+
+
+def test_non_json_response_is_not_quality_zero():
+    chunk = ReviewChunk(
+        files=["src/App.tsx"],
+        parsed_diff=ParsedDiff(raw="+x\n"),
+        estimated_tokens=1000,
+    )
+    skipped = [SkipRecord(chunk, "non_json_response")]
+    merged = ReviewAggregator.merge([], rung="scheduled", skipped=skipped)
+    assert merged.review_type == "rate_limited"
+    assert merged.routing_meta.get("final_state") == "NO_PROVIDER_AVAILABLE"

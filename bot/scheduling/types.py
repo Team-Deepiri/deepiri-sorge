@@ -30,6 +30,29 @@ class ProviderResult:
     def is_payload_too_large(self) -> bool:
         return self.status_code == 413
 
+    @property
+    def is_capacity_failure(self) -> bool:
+        """Transient capacity / unusable response — not a completed review."""
+        if self.is_rate_limited or self.timed_out:
+            return True
+        if self.status_code is not None and self.status_code >= 500:
+            return True
+        err = (self.error or "").lower()
+        return any(
+            token in err
+            for token in (
+                "empty_response",
+                "empty_or_invalid",
+                "non_json",
+                "truncated",
+                "parse_warning",
+                "timeout",
+                "http_429",
+                "429",
+                "rate limit",
+            )
+        )
+
 
 @dataclass
 class ProviderStatus:
@@ -51,9 +74,12 @@ class ScheduledChunk:
     attempted_providers: set[str] = field(default_factory=set)
     # After all providers 429, clear attempts and wait once (bounded).
     rate_limit_rounds: int = 0
+    complexity: float = 0.0
+    escalated: bool = False
 
 
 MAX_RATE_LIMIT_ROUNDS = 3
+ESCALATE_SCORE_THRESHOLD = 7.0
 
 
 @dataclass
@@ -71,6 +97,12 @@ class SchedulerMeta:
     skipped: int = 0
     stop_reason: str | None = None
     health_snapshot: dict[str, float] = field(default_factory=dict)
+    escalations: int = 0
+    escalation_blocked: int = 0
+    escalate_multiplex_tickets: int = 0
+    escalate_ledger_enqueued: int = 0
+    avg_complexity: float | None = None
+    retry_after_sec: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -81,4 +113,10 @@ class SchedulerMeta:
             "skipped": self.skipped,
             "stop_reason": self.stop_reason,
             "health": self.health_snapshot,
+            "escalations": self.escalations,
+            "escalation_blocked": self.escalation_blocked,
+            "escalate_multiplex_tickets": self.escalate_multiplex_tickets,
+            "escalate_ledger_enqueued": self.escalate_ledger_enqueued,
+            "avg_complexity": self.avg_complexity,
+            "retry_after_sec": self.retry_after_sec,
         }
