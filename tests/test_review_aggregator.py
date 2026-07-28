@@ -64,11 +64,12 @@ def test_rate_limit_only_skips_are_not_quality_zero():
     )
     skipped = [SkipRecord(chunk, "http_429")]
     merged = ReviewAggregator.merge([], rung="scheduled", skipped=skipped)
-    assert merged.review_type == "rate_limited"
+    assert merged.review_type == "http_429"
     assert merged.issues == []
     assert "not a code-quality score" in merged.summary
     assert any("/sorge" in r for r in merged.recommendations)
     assert merged.routing_meta.get("final_state") == "NO_PROVIDER_AVAILABLE"
+    assert merged.routing_meta.get("deferral_class") == "http_429"
 
 
 def test_empty_response_after_stampede_is_not_quality_zero():
@@ -85,10 +86,11 @@ def test_empty_response_after_stampede_is_not_quality_zero():
         skipped=skipped,
         scheduler_meta={"retry_after_sec": 90, "stop_reason": None},
     )
-    assert merged.review_type == "rate_limited"
+    assert merged.review_type == "vacuous_or_truncated"
     assert merged.issues == []
-    assert "No automated review was generated" in merged.summary
+    assert "No trustworthy review" in merged.summary or "truncated" in merged.summary.lower()
     assert merged.routing_meta.get("final_state") == "NO_PROVIDER_AVAILABLE"
+    assert merged.routing_meta.get("deferral_class") == "vacuous_or_truncated"
 
 
 def test_non_json_response_is_not_quality_zero():
@@ -99,5 +101,25 @@ def test_non_json_response_is_not_quality_zero():
     )
     skipped = [SkipRecord(chunk, "non_json_response")]
     merged = ReviewAggregator.merge([], rung="scheduled", skipped=skipped)
-    assert merged.review_type == "rate_limited"
+    assert merged.review_type == "vacuous_or_truncated"
     assert merged.routing_meta.get("final_state") == "NO_PROVIDER_AVAILABLE"
+
+
+def test_gemini_soft_quota_deferral_class():
+    chunk = ReviewChunk(
+        files=["src/a.py"],
+        parsed_diff=ParsedDiff(raw="+x\n"),
+        estimated_tokens=1000,
+    )
+    skipped = [
+        SkipRecord(chunk, "deferred_gemini_quota_exhausted:prioritized_top_8_of_37")
+    ]
+    merged = ReviewAggregator.merge(
+        [],
+        rung="scheduled",
+        skipped=skipped,
+        quota_snapshot={"gemini": {"limit": 20, "used": 20, "remaining": 0}},
+    )
+    assert merged.review_type == "soft_quota_exhausted"
+    assert "soft daily quota" in merged.summary.lower()
+    assert merged.routing_meta.get("deferral_class") == "soft_quota_exhausted"

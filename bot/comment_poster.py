@@ -136,11 +136,38 @@ class CommentPoster:
         return self.post_comment(repo, pr_number, body)
 
     def _format_rate_limited_comment(self, review: ReviewResult) -> str:  # type: ignore
+        routing_meta = getattr(review, "routing_meta", None) or {}
+        deferral = (
+            routing_meta.get("deferral_class")
+            or getattr(review, "review_type", "")
+            or "providers_exhausted"
+        )
+        status_line = {
+            "soft_quota_exhausted": (
+                "**Status:** Deferred — Gemini soft daily quota exhausted"
+            ),
+            "http_429": "**Status:** Deferred — provider HTTP 429 rate limits",
+            "vacuous_or_truncated": (
+                "**Status:** Deferred — truncated/empty model responses (not RPM)"
+            ),
+            "mixed_capacity": (
+                "**Status:** Deferred — mixed soft-quota / HTTP 429 / vacuous responses"
+            ),
+            "rate_limited": (
+                "**Status:** Temporarily unavailable — provider capacity"
+            ),
+            "providers_exhausted": (
+                "**Status:** Temporarily unavailable — providers exhausted"
+            ),
+        }.get(str(deferral), "**Status:** Temporarily unavailable — provider capacity")
+
         lines = [
             SORGE_COMMENT_ANCHOR,
             "## Sorge AI Code Review",
             "",
-            "**Status:** Temporarily unavailable — provider rate limits",
+            status_line,
+            "",
+            f"**Deferral class:** `{deferral}`",
             "",
             "---",
             "",
@@ -154,19 +181,31 @@ class CommentPoster:
                 lines.append(f"- {normalize_whitespace(rec)}")
             lines.append("")
 
-        routing_meta = getattr(review, "routing_meta", None)
         if routing_meta:
             sched = routing_meta.get("scheduler") or {}
+            quota = routing_meta.get("quota") or {}
             retry_sec = sched.get("retry_after_sec")
-            if retry_sec:
+            if retry_sec and str(deferral) not in {"soft_quota_exhausted"}:
                 mins = max(1, int((float(retry_sec) + 59) // 60))
                 lines.extend([f"**Retry in ~{mins} minute(s)**", ""])
-            picks = sched.get("provider_picks") or []
             detail_lines = []
+            if quota:
+                qbits = []
+                for key in ("gemini", "gpt", "openrouter"):
+                    row = quota.get(key) or {}
+                    if row:
+                        qbits.append(
+                            f"{key} {row.get('used', '?')}/{row.get('limit', '?')}"
+                        )
+                if qbits:
+                    detail_lines.append(f"- Soft RPD: {', '.join(qbits)}")
+            picks = sched.get("provider_picks") or []
             if picks:
                 summary = ", ".join(
                     f"{p.get('provider')}({'ok' if p.get('ok') else 'fail'}"
-                    f"|{p.get('reason', '?')})"
+                    f"|{p.get('reason', '?')}"
+                    f"|err={p.get('error') or '-'}"
+                    f")"
                     for p in picks[:8]
                 )
                 more = f" +{len(picks) - 8} more" if len(picks) > 8 else ""
@@ -198,7 +237,14 @@ class CommentPoster:
         return "\n".join(lines)
 
     def _format_review_comment(self, review: ReviewResult) -> str:  # type: ignore
-        if getattr(review, "review_type", "") == "rate_limited":
+        if getattr(review, "review_type", "") in {
+            "rate_limited",
+            "soft_quota_exhausted",
+            "http_429",
+            "vacuous_or_truncated",
+            "mixed_capacity",
+            "providers_exhausted",
+        }:
             return self._format_rate_limited_comment(review)
 
         lines = [

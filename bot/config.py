@@ -188,6 +188,13 @@ class SchedulerConfig(BaseModel):
     auto_retry_delay_max_sec: int = Field(
         default=120, description="Max delay before one automatic /sorge retry after rate-limit"
     )
+    gemini_dead_max_chunks: int = Field(
+        default=8,
+        description=(
+            "When Gemini soft daily quota is exhausted, only review the top-N "
+            "priority chunks on free-tier Groq/OpenRouter; defer the rest."
+        ),
+    )
 
 
 class Config(BaseModel):

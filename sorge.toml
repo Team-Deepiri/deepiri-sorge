@@ -80,6 +80,8 @@ partial_on_exhausted = true
 max_capacity_wait_sec = 120
 auto_retry_delay_min_sec = 60
 auto_retry_delay_max_sec = 120
+# Free-tier survival: when Gemini RPD is gone, don't stampede 30+ chunks onto Groq/OR.
+gemini_dead_max_chunks = 8
 
 [providers.groq]
 rpm = 30

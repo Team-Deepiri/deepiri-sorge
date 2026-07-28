@@ -17,6 +17,7 @@ from bot.utils.http_retry import post_with_retry
 
 # Cap repo context chars so input+output stay inside Groq's ~8k window.
 _GROQ_CONTEXT_CHAR_CAP = 6_000
+_GROQ_DIFF_CHAR_FLOOR = 2_000
 
 
 class GroqRunner(BaseRunner):
@@ -31,6 +32,8 @@ class GroqRunner(BaseRunner):
     MIN_OUTPUT_TOKENS = 1024
     DESIRED_MAX_TOKENS = 4096
     RETRY_MAX_TOKENS = 6144
+    # Scheduler token estimates are often high; never let them starve output below this.
+    SCHEDULER_ESTIMATE_SLACK = 512
 
     def __init__(
         self,
@@ -55,9 +58,19 @@ class GroqRunner(BaseRunner):
         return max(1, chars // 4)
 
     def _input_token_estimate(self, messages: list[dict[str, str]]) -> int:
-        if self._effective_input_tokens is not None and self._effective_input_tokens > 0:
-            return self._effective_input_tokens
-        return self._estimate_message_tokens(messages)
+        """Budget max_tokens from real prompt size.
+
+        Scheduler estimates (diff tokens + template overhead) often overshoot the
+        actual message, which used to force max_tokens≈1300 and vacuous truncations.
+        Prefer the character estimate; only nudge upward slightly toward the
+        scheduler hint so we do not under-budget the window.
+        """
+        char_est = self._estimate_message_tokens(messages)
+        sched = self._effective_input_tokens
+        if sched is None or sched <= 0:
+            return char_est
+        # Keep within ~SCHEDULER_ESTIMATE_SLACK of the real prompt.
+        return max(char_est, min(int(sched), char_est + self.SCHEDULER_ESTIMATE_SLACK))
 
     @classmethod
     def _cap_max_tokens(cls, est_input: int, desired: int) -> int:
@@ -67,6 +80,11 @@ class GroqRunner(BaseRunner):
         if headroom < cls.MIN_OUTPUT_TOKENS:
             return max(256, headroom)
         return max(cls.MIN_OUTPUT_TOKENS, min(desired, headroom))
+
+    def _headroom_for(self, messages: list[dict[str, str]]) -> int:
+        est = self._input_token_estimate(messages)
+        raw = self.CONTEXT_TOKEN_LIMIT - est - self.CONTEXT_SAFETY_BUFFER
+        return int(raw * self.HEADROOM_SAFETY)
 
     def _run_review(self, diff: ParsedDiff) -> ReviewResult | None:
         if not self.api_key:
@@ -98,16 +116,24 @@ class GroqRunner(BaseRunner):
                         self._last_retry_after = None
             return None
 
-    def _build_prompt(self, diff: ParsedDiff) -> str:
+    def _build_prompt(
+        self,
+        diff: ParsedDiff,
+        *,
+        context_block: str | None = None,
+        diff_raw: str | None = None,
+    ) -> str:
         template = load_groq_bug_detector_template()
-        context_block = self._repo_context or (
-            "(No repository context — note reuse risks if the PR adds helpers already in repo.)"
-        )
+        if context_block is None:
+            context_block = self._repo_context or (
+                "(No repository context — note reuse risks if the PR adds helpers already in repo.)"
+            )
         if len(context_block) > _GROQ_CONTEXT_CHAR_CAP:
             context_block = (
                 context_block[:_GROQ_CONTEXT_CHAR_CAP]
                 + "\n\n… _(repo context truncated for Groq context window)_"
             )
+        raw = diff.raw if diff_raw is None else diff_raw
 
         return f"""{template}
 
@@ -118,7 +144,7 @@ Files changed: {", ".join(diff.files)}
 Total lines: +{diff.lines_added} -{diff.lines_deleted}
 
 ```diff
-{diff.raw}
+{raw}
 ```
 
 ---
@@ -127,20 +153,74 @@ Total lines: +{diff.lines_added} -{diff.lines_deleted}
 {context_block}
 """
 
-    def _build_messages(self, diff: ParsedDiff) -> list[dict[str, str]]:
+    def _system_message(self) -> dict[str, str]:
+        return {
+            "role": "system",
+            "content": (
+                "You are a fast production bug detector. Respond with a single raw JSON "
+                "object only. No markdown fences. Max 5 hard findings; ignore style nits."
+            ),
+        }
+
+    def _build_messages(
+        self,
+        diff: ParsedDiff,
+        *,
+        context_block: str | None = None,
+        diff_raw: str | None = None,
+    ) -> list[dict[str, str]]:
         return [
+            self._system_message(),
             {
-                "role": "system",
-                "content": (
-                    "You are a fast production bug detector. Respond with a single raw JSON "
-                    "object only. No markdown fences. Max 5 hard findings; ignore style nits."
+                "role": "user",
+                "content": self._build_prompt(
+                    diff, context_block=context_block, diff_raw=diff_raw
                 ),
             },
-            {"role": "user", "content": self._build_prompt(diff)},
         ]
 
+    def _fit_messages_for_output(self, diff: ParsedDiff) -> list[dict[str, str]]:
+        """Shrink context/diff until max_tokens can be at least MIN_OUTPUT_TOKENS.
+
+        Stays inside the same Groq 8k window — one request budget, no extra RPM
+        beyond the optional truncated retry already in _call_api.
+        """
+        context = self._repo_context or (
+            "(No repository context — note reuse risks if the PR adds helpers already in repo.)"
+        )
+        raw = diff.raw
+        messages = self._build_messages(diff, context_block=context, diff_raw=raw)
+        if self._headroom_for(messages) >= self.MIN_OUTPUT_TOKENS:
+            return messages
+
+        # 1) Drop repo context aggressively.
+        context = "(Repo context omitted to fit Groq 8k window.)"
+        messages = self._build_messages(diff, context_block=context, diff_raw=raw)
+        if self._headroom_for(messages) >= self.MIN_OUTPUT_TOKENS:
+            logger.info("Groq prompt fit: omitted repo context for output headroom")
+            return messages
+
+        # 2) Binary-shrink the diff body until headroom is enough (keep a floor).
+        lo, hi = _GROQ_DIFF_CHAR_FLOOR, len(raw)
+        best = raw[: max(_GROQ_DIFF_CHAR_FLOOR, min(len(raw), 4000))]
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            trial = raw[:mid] + ("\n… _(diff truncated for Groq context window)_" if mid < len(raw) else "")
+            trial_msgs = self._build_messages(diff, context_block=context, diff_raw=trial)
+            if self._headroom_for(trial_msgs) >= self.MIN_OUTPUT_TOKENS:
+                best = trial
+                messages = trial_msgs
+                lo = mid + 1
+            else:
+                hi = mid - 1
+        logger.info(
+            f"Groq prompt fit: truncated diff to ~{len(best)} chars for "
+            f">={self.MIN_OUTPUT_TOKENS} output tokens"
+        )
+        return messages
+
     def _call_api(self, diff: ParsedDiff, start_time: float) -> ReviewResult:
-        messages = self._build_messages(diff)
+        messages = self._fit_messages_for_output(diff)
         est_input = self._input_token_estimate(messages)
         first_cap = self._cap_max_tokens(est_input, self.DESIRED_MAX_TOKENS)
         result, truncated = self._complete(messages, start_time, first_cap)
