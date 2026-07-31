@@ -236,6 +236,24 @@ class EscalateLedger:
             # Fail open — don't block reviews if KV is down.
             return True
 
+    def try_consume_rpm(self, provider: str, *, rpm: float) -> bool:
+        """Shared per-minute rate budget across Actions runs (sliding window)."""
+        if not self.remote:
+            return True
+        try:
+            r = requests.post(
+                f"{self.base_url}/ledger/rpm/consume",
+                headers=self._headers(),
+                json={"provider": provider, "rpm": rpm},
+                timeout=15,
+            )
+            r.raise_for_status()
+            return bool(r.json().get("ok"))
+        except requests.RequestException as e:
+            logger.warning(f"Ledger rpm consume failed ({provider}): {e}")
+            # Fail open — don't block reviews if KV is down.
+            return True
+
     def release_slot(self, provider: str, *, holder_id: str) -> None:
         if not self.remote:
             return

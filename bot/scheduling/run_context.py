@@ -96,6 +96,12 @@ class RunContext:
                 name, max_inflight=rt.max_inflight, ttl_sec=180.0
             ):
                 return False
+            # Shared per-minute rate budget — the local TokenBucket only sees
+            # this run's own calls, so concurrent runs can jointly exceed the
+            # provider's real RPM even while max_inflight is respected.
+            if not self.semaphore.try_consume_rpm(name, rpm=rt.bucket.rate_per_sec * 60.0):
+                self.semaphore.release(name)
+                return False
         with rt.lock:
             # Re-check after remote acquire.
             if rt.in_flight >= rt.max_inflight:

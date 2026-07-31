@@ -43,6 +43,11 @@ class ProviderSemaphore:
             self._held.add(provider)
         return ok
 
+    def try_consume_rpm(self, provider: str, *, rpm: float) -> bool:
+        if not self.enabled:
+            return True
+        return self.ledger.try_consume_rpm(provider, rpm=rpm)
+
     def release(self, provider: str) -> None:
         if provider not in self._held:
             return

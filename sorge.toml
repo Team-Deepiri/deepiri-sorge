@@ -83,7 +83,7 @@ auto_retry_delay_max_sec = 120
 
 [providers.groq]
 rpm = 30
-max_inflight = 1
+max_inflight = 2
 # Free-tier window is ~8k including template + repo context; 413 shrinks further at runtime
 max_context_tokens = 7000
 quality_prior = 0.9
@@ -91,7 +91,7 @@ nominal_latency_ms = 400
 
 [providers.openrouter]
 rpm = 20
-max_inflight = 1
+max_inflight = 2
 max_context_tokens = 100000
 quality_prior = 0.7
 nominal_latency_ms = 800
