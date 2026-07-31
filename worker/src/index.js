@@ -327,6 +327,22 @@ async function saveSlots(env, slots) {
   await env.SORGE_LEDGER.put("provider_slots", JSON.stringify(slots));
 }
 
+async function loadRpmWindow(env) {
+  if (!env.SORGE_LEDGER) return {};
+  const raw = await env.SORGE_LEDGER.get("provider_rpm");
+  if (!raw) return {};
+  try {
+    return JSON.parse(raw) || {};
+  } catch {
+    return {};
+  }
+}
+
+async function saveRpmWindow(env, windows) {
+  if (!env.SORGE_LEDGER) return;
+  await env.SORGE_LEDGER.put("provider_rpm", JSON.stringify(windows));
+}
+
 async function loadRetries(env) {
   if (!env.SORGE_LEDGER) return [];
   const raw = await env.SORGE_LEDGER.get("review_retries");
@@ -529,6 +545,27 @@ async function handleLedger(request, env, url) {
     slots[provider] = list;
     await saveSlots(env, slots);
     return json({ ok: true, held: list.length, max: maxInflight });
+  }
+
+  // Shared per-minute rate budget across Actions runs (sliding 60s window).
+  if (url.pathname === "/ledger/rpm/consume" && request.method === "POST") {
+    const body = await request.json();
+    const provider = String(body.provider || "");
+    const rpm = Math.max(1, Number(body.rpm) || 1);
+    if (!provider) {
+      return json({ ok: false, error: "provider required" }, 400);
+    }
+    const windows = await loadRpmWindow(env);
+    const now = Date.now() / 1000;
+    const cutoff = now - 60;
+    const recent = (windows[provider] || []).filter((ts) => ts > cutoff);
+    if (recent.length >= rpm) {
+      return json({ ok: false, used: recent.length, rpm });
+    }
+    recent.push(now);
+    windows[provider] = recent;
+    await saveRpmWindow(env, windows);
+    return json({ ok: true, used: recent.length, rpm });
   }
 
   if (url.pathname === "/ledger/slots/release" && request.method === "POST") {
