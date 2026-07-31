@@ -74,3 +74,52 @@ def test_load_declared_dependencies_reads_package_json(tmp_path: Path):
     names = load_declared_dependencies(tmp_path)
     assert "mammoth" in names
     assert "vitest" in names
+
+
+def test_extract_python_import_with_alias():
+    raw = """diff --git a/a.py b/a.py
+--- a/a.py
++++ b/a.py
+@@ -0,0 +1,1 @@
++import numpy as np
+"""
+    diff = DiffParser().parse(raw)
+    assert extract_imported_packages(diff) == ["numpy"]
+
+
+def test_extract_python_from_import():
+    raw = """diff --git a/a.py b/a.py
+--- a/a.py
++++ b/a.py
+@@ -0,0 +1,2 @@
++from numpy import array
++from quantum_bridge.mapa.corpus import cooccurrence
+"""
+    diff = DiffParser().parse(raw)
+    assert extract_imported_packages(diff) == ["numpy", "quantum_bridge"]
+
+
+def test_extract_python_from_import_with_alias():
+    raw = """diff --git a/a.py b/a.py
+--- a/a.py
++++ b/a.py
+@@ -0,0 +1,1 @@
++from numpy import array as arr
+"""
+    diff = DiffParser().parse(raw)
+    assert extract_imported_packages(diff) == ["numpy"]
+
+
+def test_format_import_manifest_recognizes_aliased_numpy_import(tmp_path: Path):
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.poetry.dependencies]\nnumpy = ">=1.24.0"\n'
+    )
+    raw = """diff --git a/a.py b/a.py
+--- a/a.py
++++ b/a.py
+@@ -0,0 +1,1 @@
++import numpy as np
+"""
+    diff = DiffParser().parse(raw)
+    block = format_import_manifest_evidence(tmp_path, diff)
+    assert "numpy: declared" in block
