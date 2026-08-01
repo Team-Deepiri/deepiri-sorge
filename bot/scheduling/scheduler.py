@@ -125,6 +125,21 @@ class ReviewScheduler:
         )
         return cls(providers, ctx, max_workers=config.scheduler.max_workers)
 
+    def _scale_capacity_wait(self, queue_len: int) -> None:
+        """Scale the capacity-wait budget with queue size.
+
+        The budget exists to avoid parking the Actions job for 10+ minutes on
+        a single stuck chunk — it was never meant to be a run-wide cap. A
+        handful of early rate-limit cooldowns can exhaust a fixed 120s budget
+        in the first couple of minutes, after which every remaining chunk
+        gets abandoned in one shot regardless of how large the PR is or how
+        much wall-clock time is left. Large PRs legitimately need to ride out
+        more cooldowns, so scale up — but never past the wall-clock deadline
+        minus a margin to actually post results.
+        """
+        scaled = max(self.ctx.max_capacity_wait_sec, 8.0 * queue_len)
+        self.ctx.max_capacity_wait_sec = max(20.0, min(scaled, self.ctx.remaining_sec() - 30.0))
+
     def run(self, chunks: list[ReviewChunk]) -> tuple[list[ReviewResult], list[SkipRecord], SchedulerMeta]:
         overhead = self.ctx.prompt_overhead_tokens
         queue = [
@@ -139,6 +154,9 @@ class ReviewScheduler:
         queue.sort(key=sort_key)
         if queue:
             self.meta.avg_complexity = sum(s.complexity for s in queue) / len(queue)
+
+        if queue:
+            self._scale_capacity_wait(len(queue))
 
         results: list[ReviewResult] = []
         skipped: list[SkipRecord] = []
