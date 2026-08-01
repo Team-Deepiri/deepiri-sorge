@@ -21,10 +21,11 @@ class OpenRouterProvider:
         self.max_context_tokens = runtime.max_context_tokens
         self.quality_prior = runtime.quality_prior
         self.nominal_latency_ms = runtime.nominal_latency_ms
-        # Phase 1: one model per review slot — no 4×3 stampede.
+        # Phase 1: one model per review slot — no 4×3 stampede. On 429, walk free list.
         self._runner = OpenRouterRunner(
             api_key=config.openrouter.api_key,
             model=config.openrouter.model,
+            models=list(config.openrouter.models or [config.openrouter.model]),
             endpoint=config.openrouter.endpoint,
             cache_config=None,
             http_retries=1,
