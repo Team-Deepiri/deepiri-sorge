@@ -84,6 +84,8 @@ Comment on any PR:
 
 The GitHub App receives an `issue_comment` webhook, the Worker checks for `/sorge`, and dispatches the same central review workflow. Slash-command-triggered runs pass `--force` so small/docs-only filters do not skip the review.
 
+`/sorge` must appear at the start of its own line (leading whitespace is OK) and must not be inside a fenced/inline code block or a `>` blockquote — this avoids accidental triggers from quoted replies or code snippets that merely mention `/sorge`. Mid-line usage (e.g. `please run /sorge now`) will not trigger a review.
+
 If your App bot login is not `sorge`, set `SORGE_BOT_LOGIN` on the Worker (e.g. `deepiri-sorge`).
 ## Escalate multiplex + drain (Gemini RPD)
 
