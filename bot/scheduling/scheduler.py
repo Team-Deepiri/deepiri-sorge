@@ -301,6 +301,17 @@ class ReviewScheduler:
                             ok=False,
                             latency_ms=outcome.latency_ms,
                         )
+                        # Keep the first salvaged fragment: it came from the
+                        # highest-ranked provider that got far enough to
+                        # produce one, so it's the best primer available.
+                        if outcome.partial_output and not scheduled.partial_review:
+                            scheduled.partial_review = outcome.partial_output
+                            scheduled.partial_provider = name
+                            logger.info(
+                                f"Salvaged {len(outcome.partial_output)} chars of "
+                                f"partial review from {name}; next provider will "
+                                f"resume instead of restarting"
+                            )
                         logger.info(
                             f"Provider attempt failed provider={name} "
                             f"status={outcome.status_code} "
@@ -842,12 +853,22 @@ class ReviewScheduler:
     def _dispatch(self, scheduled: ScheduledChunk, name: str) -> ProviderResult:
         provider = self.providers[name]
         eff = effective_tokens(scheduled, self.ctx.prompt_overhead_tokens)
+        primed = ""
+        if scheduled.partial_review:
+            primed = (
+                f", primed={len(scheduled.partial_review)}ch "
+                f"from {scheduled.partial_provider}"
+            )
         logger.info(
             f"Scheduler → {name} for chunk "
             f"(priority={scheduled.priority}, complexity={scheduled.complexity:.2f}, "
-            f"tokens={scheduled.chunk.estimated_tokens}, effective={eff})"
+            f"tokens={scheduled.chunk.estimated_tokens}, effective={eff}{primed})"
         )
-        return provider.review(scheduled.chunk, self.ctx)
+        return provider.review(
+            scheduled.chunk,
+            self.ctx,
+            prior_partial=scheduled.partial_review,
+        )
 
     def _record_success(self, name: str, latency_ms: float) -> None:
         rt = self.ctx.providers[name]

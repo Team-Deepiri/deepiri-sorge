@@ -179,7 +179,7 @@ def test_scheduler_does_not_stampede_dead_provider():
         def advertise(self, run):
             return run.status(self.name)
 
-        def review(self, chunk, run):
+        def review(self, chunk, run, *, prior_partial=None):
             calls["groq"] += 1
             return ProviderResult(
                 ok=False,
@@ -199,7 +199,7 @@ def test_scheduler_does_not_stampede_dead_provider():
         def advertise(self, run):
             return run.status(self.name)
 
-        def review(self, chunk, run):
+        def review(self, chunk, run, *, prior_partial=None):
             calls["gemini"] += 1
             return ProviderResult(
                 ok=True,
@@ -266,7 +266,7 @@ def test_scheduler_cache_hit_skips_acquire(tmp_path, monkeypatch):
         def advertise(self, run):
             return run.status(self.name)
 
-        def review(self, chunk, run):
+        def review(self, chunk, run, *, prior_partial=None):
             calls["gemini"] += 1
             return ProviderResult(ok=True, provider="gemini", status_code=200, result=_ok_result())
 
@@ -326,7 +326,7 @@ def test_scheduler_priority_under_deadline():
         def advertise(self, run):
             return run.status(self.name)
 
-        def review(self, chunk, run):
+        def review(self, chunk, run, *, prior_partial=None):
             reviewed.append(chunk.files[0])
             time.sleep(0.15)
             return ProviderResult(
@@ -435,7 +435,7 @@ def test_capacity_wait_budget_defers_without_burning_wall_clock():
         def advertise(self, run):
             return run.status(self.name)
 
-        def review(self, chunk, run):
+        def review(self, chunk, run, *, prior_partial=None):
             raise AssertionError("should not dispatch while cooling")
 
     history = ProviderHistory(sync_remote=False)
@@ -477,3 +477,161 @@ def test_capacity_wait_budget_defers_without_burning_wall_clock():
     assert skipped
     assert meta.stop_reason == "providers_exhausted"
     assert any("capacity_waited" in s.reason or "no eligible" in s.reason for s in skipped)
+
+
+def test_scheduler_forwards_partial_output_to_fallback_provider():
+    """A truncated Groq response primes the next provider instead of being dropped."""
+    seen = {"gemini_prior": "unset"}
+    partial = (
+        '{"summary": "Reviewed mmap.cpp", "issues": [{"severity": "high", '
+        '"file": "src/mmap.cpp", "line": 42, "message": "munmap called on a '
+        'region that was already reset, so the second call double-unmaps"'
+    )
+
+    class FakeGroq:
+        name = "groq"
+        max_context_tokens = 100000
+        cost_tier = "free"
+        nominal_latency_ms = 200
+        quality_prior = 0.9
+
+        def advertise(self, run):
+            return run.status(self.name)
+
+        def review(self, chunk, run, *, prior_partial=None):
+            # HTTP 200 but cut off mid-generation (finish_reason=length).
+            return ProviderResult(
+                ok=False,
+                provider="groq",
+                status_code=200,
+                error="empty_or_invalid_review",
+                partial_output=partial,
+            )
+
+    class FakeGemini:
+        name = "gemini"
+        max_context_tokens = 100000
+        cost_tier = "free"
+        nominal_latency_ms = 800
+        quality_prior = 0.8
+
+        def advertise(self, run):
+            return run.status(self.name)
+
+        def review(self, chunk, run, *, prior_partial=None):
+            seen["gemini_prior"] = prior_partial
+            return ProviderResult(
+                ok=True,
+                provider="gemini",
+                status_code=200,
+                result=_ok_result(),
+            )
+
+    from bot.scheduling.run_context import ProviderRuntime, RunContext
+
+    quota = QuotaTracker(
+        limits={"gpt": 100, "gemini": 100, "openrouter": 100},
+        used={"gpt": 0, "gemini": 0, "openrouter": 0},
+    )
+    run = RunContext(
+        providers={
+            "groq": ProviderRuntime(
+                name="groq",
+                bucket=TokenBucket(30),
+                health=HealthTracker(100),
+                max_context_tokens=100000,
+                max_inflight=1,
+                nominal_latency_ms=200,
+                quality_prior=0.9,
+            ),
+            "gemini": ProviderRuntime(
+                name="gemini",
+                bucket=TokenBucket(30),
+                health=HealthTracker(100),
+                max_context_tokens=100000,
+                max_inflight=1,
+                nominal_latency_ms=800,
+                quality_prior=0.8,
+            ),
+        },
+        quota=quota,
+        deadline=time.monotonic() + 30,
+    )
+    scheduler = ReviewScheduler([FakeGroq(), FakeGemini()], run, max_workers=1)
+    chunk = ReviewChunk(
+        files=["src/mmap.cpp"],
+        parsed_diff=ParsedDiff(raw="+void reset();\n"),
+        estimated_tokens=100,
+    )
+    results, _skipped, _meta = scheduler.run([chunk])
+
+    assert len(results) == 1
+    assert seen["gemini_prior"] == partial, "fallback should resume from Groq's partial"
+
+
+def test_scheduler_does_not_prime_when_no_partial_salvaged():
+    seen = {"gemini_prior": "unset"}
+
+    class FakeGroq:
+        name = "groq"
+        max_context_tokens = 100000
+        cost_tier = "free"
+        nominal_latency_ms = 200
+        quality_prior = 0.9
+
+        def advertise(self, run):
+            return run.status(self.name)
+
+        def review(self, chunk, run, *, prior_partial=None):
+            return ProviderResult(
+                ok=False, provider="groq", status_code=429, retry_after=60,
+                error="rate limited",
+            )
+
+    class FakeGemini:
+        name = "gemini"
+        max_context_tokens = 100000
+        cost_tier = "free"
+        nominal_latency_ms = 800
+        quality_prior = 0.8
+
+        def advertise(self, run):
+            return run.status(self.name)
+
+        def review(self, chunk, run, *, prior_partial=None):
+            seen["gemini_prior"] = prior_partial
+            return ProviderResult(
+                ok=True, provider="gemini", status_code=200, result=_ok_result(),
+            )
+
+    from bot.scheduling.run_context import ProviderRuntime, RunContext
+
+    quota = QuotaTracker(
+        limits={"gpt": 100, "gemini": 100, "openrouter": 100},
+        used={"gpt": 0, "gemini": 0, "openrouter": 0},
+    )
+    run = RunContext(
+        providers={
+            "groq": ProviderRuntime(
+                name="groq", bucket=TokenBucket(30), health=HealthTracker(100),
+                max_context_tokens=100000, max_inflight=1,
+                nominal_latency_ms=200, quality_prior=0.9,
+            ),
+            "gemini": ProviderRuntime(
+                name="gemini", bucket=TokenBucket(30), health=HealthTracker(100),
+                max_context_tokens=100000, max_inflight=1,
+                nominal_latency_ms=800, quality_prior=0.8,
+            ),
+        },
+        quota=quota,
+        deadline=time.monotonic() + 30,
+    )
+    scheduler = ReviewScheduler([FakeGroq(), FakeGemini()], run, max_workers=1)
+    chunk = ReviewChunk(
+        files=["a.py"],
+        parsed_diff=ParsedDiff(raw="+print(1)\n"),
+        estimated_tokens=100,
+    )
+    scheduler.run([chunk])
+
+    assert seen["gemini_prior"] is None

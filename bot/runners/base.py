@@ -22,6 +22,7 @@ class BaseRunner(ABC):
         self.api_key = api_key
         self._cache_config = cache_config  # bot.config.CacheConfig or None
         self._repo_context: str | None = None
+        self._prior_partial: str | None = None
 
     def review(
         self,
@@ -29,6 +30,7 @@ class BaseRunner(ABC):
         *,
         repo_context: str | None = None,
         context_fingerprint: str = "",
+        prior_partial: str | None = None,
     ) -> ReviewResult | None:
         if self._cache_config and self._cache_config.enabled:
             from bot.utils import cache as _cache
@@ -47,6 +49,7 @@ class BaseRunner(ABC):
                     return self._result_from_dict(cached)
 
         self._repo_context = repo_context
+        self._prior_partial = prior_partial
         result = self._run_review(diff)
 
         if result is not None and not result.parse_warning and self._cache_config and self._cache_config.enabled:
@@ -64,6 +67,26 @@ class BaseRunner(ABC):
     def _run_review(self, diff: ParsedDiff) -> ReviewResult | None:
         """Subclasses implement the actual API call here."""
         pass
+
+    @staticmethod
+    def _partial_block(partial: str | None) -> str:
+        """Render a cut-off response from a previous provider as a primer."""
+        if not partial or not partial.strip():
+            return ""
+        return f"""
+---
+
+## PRIOR PARTIAL ANALYSIS (incomplete)
+A more capable model started this review and was cut off mid-response. Its
+partial output is below. Treat it as a lead, not as truth: keep the findings
+you can confirm against the DIFF, discard the ones you cannot, and finish the
+review. Respond with a complete JSON object of your own — do not echo this
+fragment.
+
+```
+{partial.strip()}
+```
+"""
 
     def _build_prompt(self, diff: ParsedDiff) -> str:
         template = load_review_template()
@@ -87,7 +110,7 @@ Total lines: +{diff.lines_added} -{diff.lines_deleted}
 
 ## REPOSITORY CONTEXT
 {context_block}
-"""
+{self._partial_block(self._prior_partial)}"""
 
     def _parse_response(self, response_text: str) -> dict:
         return parse_review_response(response_text)

@@ -125,7 +125,7 @@ Total lines: +{diff.lines_added} -{diff.lines_deleted}
 
 ## REPOSITORY CONTEXT
 {context_block}
-"""
+{self._partial_block(self._prior_partial)}"""
 
     def _build_messages(self, diff: ParsedDiff) -> list[dict[str, str]]:
         return [

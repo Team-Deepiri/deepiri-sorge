@@ -309,7 +309,7 @@ def test_vacuous_clean_hard_review_escalates_via_gemini_multiplex():
         def advertise(self, run):
             return run.status(self.name)
 
-        def review(self, chunk, run):
+        def review(self, chunk, run, *, prior_partial=None):
             calls["groq"] += 1
             return ProviderResult(
                 ok=True,
@@ -354,7 +354,7 @@ def test_vacuous_clean_hard_review_escalates_via_gemini_multiplex():
         def advertise(self, run):
             return run.status(self.name)
 
-        def review(self, chunk, run):
+        def review(self, chunk, run, *, prior_partial=None):
             calls["gemini_review"] += 1
             return ProviderResult(
                 ok=True,
@@ -458,7 +458,7 @@ def test_docs_clean_review_does_not_call_gemini_multiplex():
         def advertise(self, run):
             return run.status(self.name)
 
-        def review(self, chunk, run):
+        def review(self, chunk, run, *, prior_partial=None):
             calls["groq"] += 1
             return ProviderResult(
                 ok=True,
@@ -491,7 +491,7 @@ def test_docs_clean_review_does_not_call_gemini_multiplex():
         def advertise(self, run):
             return run.status(self.name)
 
-        def review(self, chunk, run):
+        def review(self, chunk, run, *, prior_partial=None):
             raise AssertionError("docs must not primary-route to Gemini")
 
     chunk = _chunk(

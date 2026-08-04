@@ -8,8 +8,23 @@ import requests
 
 from bot.file_splitter import ReviewChunk
 from bot.scheduling.run_context import RunContext
-from bot.scheduling.types import ProviderResult
+from bot.scheduling.types import MAX_PARTIAL_CHARS, ProviderResult
 from bot.schemas import ReviewResult
+
+
+# A fragment shorter than this carries no findings worth forwarding.
+_MIN_PARTIAL_CHARS = 200
+
+
+def _salvage_partial(runner) -> str | None:
+    """Return the runner's last raw response if it's a usable cut-off fragment."""
+    raw = getattr(runner, "_last_raw_response", None)
+    if not raw or not raw.strip():
+        return None
+    text = raw.strip()
+    if len(text) < _MIN_PARTIAL_CHARS:
+        return None
+    return text[:MAX_PARTIAL_CHARS]
 
 
 def run_runner_review(
@@ -18,6 +33,7 @@ def run_runner_review(
     runner,
     chunk: ReviewChunk,
     run: RunContext,
+    prior_partial: str | None = None,
 ) -> ProviderResult:
     start = time.monotonic()
     try:
@@ -25,6 +41,7 @@ def run_runner_review(
             chunk.parsed_diff,
             repo_context=run.repo_context,
             context_fingerprint=run.context_fingerprint,
+            prior_partial=prior_partial,
         )
         latency = (time.monotonic() - start) * 1000
         if result and not result.parse_warning:
@@ -49,6 +66,8 @@ def run_runner_review(
                 error=f"http_{last_status}",
                 timed_out=bool(getattr(runner, "_last_timed_out", False)),
             )
+        # HTTP 200 but unusable — typically finish_reason=length. The text the
+        # model did produce is the whole point of forwarding.
         return ProviderResult(
             ok=False,
             provider=provider_name,
@@ -56,6 +75,7 @@ def run_runner_review(
             latency_ms=latency,
             result=result,
             error=getattr(result, "parse_warning", None) or "empty_or_invalid_review",
+            partial_output=_salvage_partial(runner),
         )
     except requests.Timeout:
         return ProviderResult(

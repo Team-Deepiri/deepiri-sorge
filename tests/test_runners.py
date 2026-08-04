@@ -439,3 +439,29 @@ class TestSchemaEncoder:
 
     def test_schema_name_is_consistent(self):
         assert SchemaEncoder.SCHEMA_NAME == "code_review"
+
+def test_prompt_includes_prior_partial_block():
+    from bot.diff_parser import ParsedDiff
+    from bot.runners.groq_runner import GroqRunner
+
+    runner = GroqRunner(api_key="k")
+    diff = ParsedDiff(raw="+int fd = open(path, O_RDONLY);\n")
+    diff.files = ["src/mmap.cpp"]
+
+    runner._repo_context = None
+    runner._prior_partial = None
+    assert "PRIOR PARTIAL ANALYSIS" not in runner._build_prompt(diff)
+
+    runner._prior_partial = '{"summary": "Reviewed mmap.cpp", "issues": [{"sev'
+    prompt = runner._build_prompt(diff)
+    assert "PRIOR PARTIAL ANALYSIS" in prompt
+    assert '"summary": "Reviewed mmap.cpp"' in prompt
+    assert "do not echo this" in prompt.lower()
+
+
+def test_partial_block_ignores_blank_input():
+    from bot.runners.base import BaseRunner
+
+    assert BaseRunner._partial_block(None) == ""
+    assert BaseRunner._partial_block("") == ""
+    assert BaseRunner._partial_block("   \n  ") == ""
