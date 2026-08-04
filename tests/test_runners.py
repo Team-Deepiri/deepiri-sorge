@@ -465,3 +465,50 @@ def test_partial_block_ignores_blank_input():
     assert BaseRunner._partial_block(None) == ""
     assert BaseRunner._partial_block("") == ""
     assert BaseRunner._partial_block("   \n  ") == ""
+
+
+def test_prompt_puts_cacheable_prefix_before_the_diff():
+    """Template + repo context are identical across a PR's chunks, so they must
+    precede the varying diff or providers cannot serve them from prefix cache.
+    On Groq, cached tokens also don't count against the rate limit."""
+    from bot.diff_parser import ParsedDiff
+    from bot.runners.groq_runner import GroqRunner
+
+    runner = GroqRunner(api_key="k")
+    runner._repo_context = "REPO_CONTEXT compact evidence — reuse|src/a.hpp:3|class A"
+    runner._prior_partial = None
+
+    diff = ParsedDiff(raw="+int fd = open(path, O_RDONLY);\n")
+    diff.files = ["src/mmap.cpp"]
+    prompt = runner._build_prompt(diff)
+
+    ctx_at = prompt.index("## REPOSITORY CONTEXT")
+    diff_at = prompt.index("## DIFF (primary review target)")
+    assert ctx_at < diff_at, "repo context must precede the diff to stay cacheable"
+
+
+def test_cacheable_prefix_is_identical_across_chunks():
+    """The prefix is only useful if it's byte-identical chunk to chunk."""
+    from bot.diff_parser import ParsedDiff
+    from bot.runners.groq_runner import GroqRunner
+
+    runner = GroqRunner(api_key="k")
+    # A realistic pack, sized at the cap main.py actually feeds it.
+    runner._repo_context = "\n".join(
+        f"reuse|src/internal_headers/mod_{i}.hpp:{i}|class Mod{i} {{ void run(); }}"
+        for i in range(90)
+    )
+    runner._prior_partial = None
+
+    prompts = []
+    for raw in ("+int a = 1;\n", "+long b = 2;\n"):
+        diff = ParsedDiff(raw=raw)
+        diff.files = ["src/mmap.cpp"]
+        prompts.append(runner._build_prompt(diff))
+
+    split = prompts[0].index("## DIFF (primary review target)")
+    assert prompts[0][:split] == prompts[1][:split], "prefix diverged between chunks"
+    # Groq's minimum cacheable prefix is 128-1024 tokens depending on model;
+    # clear the top of that range so caching applies regardless of model.
+    prefix_tokens = len(prompts[0][:split]) // 4
+    assert prefix_tokens > 1024, f"prefix only {prefix_tokens} tokens — below cache floor"

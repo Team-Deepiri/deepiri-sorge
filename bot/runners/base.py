@@ -89,12 +89,29 @@ fragment.
 """
 
     def _build_prompt(self, diff: ParsedDiff) -> str:
+        """Assemble the prompt cache-prefix first.
+
+        Everything invariant across the chunks of one PR — the template and the
+        repo context pack, which main.py weaves once — goes at the front, so
+        providers can serve it from their prefix cache. The diff and any
+        resume primer vary per chunk and must follow.
+
+        Ordering matters more than it looks: with the diff in the middle, only
+        the template was cacheable and the context block was re-billed on every
+        chunk. On Groq, cached tokens also do not count against the rate limit
+        we are actually constrained by.
+        """
         template = load_review_template()
         context_block = self._repo_context or (
             "(No repository context — note reuse risks if the PR adds helpers already in repo.)"
         )
 
         return f"""{template}
+
+---
+
+## REPOSITORY CONTEXT
+{context_block}
 
 ---
 
@@ -105,11 +122,6 @@ Total lines: +{diff.lines_added} -{diff.lines_deleted}
 ```diff
 {diff.raw}
 ```
-
----
-
-## REPOSITORY CONTEXT
-{context_block}
 {self._partial_block(self._prior_partial)}"""
 
     def _parse_response(self, response_text: str) -> dict:
