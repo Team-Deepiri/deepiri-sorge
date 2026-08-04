@@ -1,5 +1,6 @@
 """Tests for symbol index + conservative claim verifier."""
 
+import subprocess
 from pathlib import Path
 
 from bot.claim_verifier import ClaimVerifier
@@ -455,6 +456,74 @@ def test_verifier_keeps_undefined_claim_for_absent_cpp_symbol(tmp_path: Path):
         file="src/internal_headers/mmap_region.hpp",
         line=20,
         message="`ShardFooter` is not defined anywhere in this file.",
+    )
+    report = ClaimVerifier().verify_issues([issue], repo_root=tmp_path)
+    assert report.kept == [issue]
+
+
+def _write_cmake_tree(root: Path) -> None:
+    """Mirrors deepiri-crankl: internal_headers lives under src/, not at root."""
+    (root / "src" / "internal_headers").mkdir(parents=True)
+    (root / "src" / "internal_headers" / "simd.hpp").write_text("#pragma once\n")
+    (root / "tests" / "ctest").mkdir(parents=True)
+    (root / "tests" / "ctest" / "test_simd.cpp").write_text(
+        '#include "internal_headers/simd.hpp"\nint main() { return 0; }\n'
+    )
+    (root / "tests" / "CMakeLists.txt").write_text(
+        "target_include_directories(test_simd PRIVATE ${CMAKE_SOURCE_DIR}/src)\n"
+    )
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+
+
+def test_path_claim_suppressed_when_directory_exists_under_another_parent(tmp_path: Path):
+    """deepiri-crankl#28: suggested ${CMAKE_SOURCE_DIR}/internal_headers, but the
+    directory is really src/internal_headers and already on the include path."""
+    _write_cmake_tree(tmp_path)
+    issue = ReviewIssue(
+        severity="critical",
+        file="tests/ctest/test_simd.cpp",
+        line=2,
+        message=(
+            'The test includes "internal_headers/simd.hpp" but the CMakeLists.txt '
+            "only adds ${CMAKE_SOURCE_DIR}/src to the include directories, so the "
+            "internal header cannot be found."
+        ),
+        suggestion=(
+            "Add `target_include_directories(test_simd PRIVATE "
+            "${CMAKE_SOURCE_DIR}/internal_headers)` in tests/CMakeLists.txt."
+        ),
+    )
+    report = ClaimVerifier().verify_issues([issue], repo_root=tmp_path)
+    assert report.kept == []
+    assert report.suppressed_count == 1
+    assert "src/internal_headers" in report.suppressed[0].reason
+
+
+def test_path_claim_kept_when_directory_genuinely_absent(tmp_path: Path):
+    _write_cmake_tree(tmp_path)
+    issue = ReviewIssue(
+        severity="high",
+        file="tests/ctest/test_simd.cpp",
+        line=2,
+        message=(
+            "The include directory ${CMAKE_SOURCE_DIR}/third_party/eigen does not "
+            "exist, so the build cannot be configured."
+        ),
+    )
+    report = ClaimVerifier().verify_issues([issue], repo_root=tmp_path)
+    assert report.kept == [issue]
+    assert report.suppressed_count == 0
+
+
+def test_path_claim_ignored_without_a_missing_assertion(tmp_path: Path):
+    """A finding that merely mentions include directories is not a path claim."""
+    _write_cmake_tree(tmp_path)
+    issue = ReviewIssue(
+        severity="low",
+        file="tests/CMakeLists.txt",
+        line=1,
+        message="Consider grouping the include directories for readability.",
     )
     report = ClaimVerifier().verify_issues([issue], repo_root=tmp_path)
     assert report.kept == [issue]

@@ -8,6 +8,7 @@ Policy (confidence rule):
   1. Structural / NameError claims → symbol index (bound before cited line).
   2. Missing-dependency claims → package.json / requirements / pyproject on HEAD.
   3. Missing-``#include`` claims → the C/C++ file's own include block on HEAD.
+  4. "Path X does not exist" claims → the tracked file/directory list on HEAD.
 
 Rationale for (3): a diff only shows changed hunks plus a few lines of context.
 An ``#include`` above the first hunk is invisible to the model, so "you use
@@ -19,6 +20,7 @@ widening the diff window would cost them on every chunk.
 from __future__ import annotations
 
 import re
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
@@ -83,6 +85,30 @@ _HEADER_PATH_RE = re.compile(
 )
 _ANGLE_HEADER_RE = re.compile(r"<([A-Za-z][A-Za-z0-9_./+-]*)>")
 
+# "the directory/path X does not exist / is missing / is not on the include path"
+_PATH_CLAIM_RE = re.compile(
+    r"(?i)\b("
+    r"director(?:y|ies)|include\s+path|include\s+dir\w*|search\s+path|"
+    r"target_include_directories|include_directories|"
+    r"CMAKE_SOURCE_DIR|CMAKE_CURRENT_SOURCE_DIR|PROJECT_SOURCE_DIR|"
+    r"CMAKE_CURRENT_LIST_DIR"
+    r")\b"
+)
+_PATH_MISSING_RE = re.compile(
+    r"(?i)("
+    r"\bdoes\s+not\s+exist\b|\bdoesn't\s+exist\b|\bnon-?existent\b|"
+    r"\bnot\s+(?:found|present|declared|configured|set|added|listed|reachable|under)\b|"
+    r"\bcan(?:not|'t)\s+be\s+(?:found|resolved|located)\b|"
+    r"\bunable\s+to\s+(?:find|resolve|locate)\b|"
+    r"\bunresolved\b|\bcompile\s+error\b|"
+    r"\bmissing\b|\babsent\b|\bnever\s+added\b|\bis\s+not\s+on\s+the\b"
+    r")"
+)
+# CMake variables that expand to the repository root.
+_CMAKE_ROOT_VARS = ("CMAKE_SOURCE_DIR", "PROJECT_SOURCE_DIR", "CMAKE_CURRENT_SOURCE_DIR")
+_CMAKE_VAR_RE = re.compile(r"\$\{(\w+)\}/?")
+_PATH_TOKEN_RE = re.compile(r"[A-Za-z0-9_${}./+-]*/[A-Za-z0-9_${}./+-]+")
+
 # Prefer explicit code mentions first.
 _BACKTICK_RE = re.compile(r"`([^`]+)`")
 _QUOTED_RE = re.compile(r"['\"]([^'\"]+)['\"]")
@@ -128,6 +154,7 @@ class ClaimVerifier:
 
     def __init__(self, indexer: SymbolIndexer | None = None):
         self.indexer = indexer or SymbolIndexer()
+        self._tracked_cache: dict[Path, tuple[set[str], dict[str, str]]] = {}
 
     def verify_result(
         self,
@@ -201,6 +228,22 @@ class ClaimVerifier:
         index_by_path = self._load_indexes(repo_root, changed_paths, indexes, issues)
 
         for issue in issues:
+            if self._looks_path_claim(issue):
+                confidence, symbol, reason = self._evaluate_path(issue, repo_root)
+                if confidence == "disproven":
+                    report.suppressed.append(
+                        SuppressionRecord(
+                            file=issue.file,
+                            line=issue.line,
+                            message=issue.message,
+                            symbol=symbol,
+                            reason=reason,
+                        )
+                    )
+                else:
+                    report.kept.append(issue)
+                continue
+
             if self._looks_include_claim(issue):
                 confidence, symbol, reason = self._evaluate_include(issue, repo_root)
                 if confidence == "disproven":
@@ -282,6 +325,115 @@ class ClaimVerifier:
         return bool(
             _DEPENDENCY_MANIFEST_RE.search(blob) and _DEPENDENCY_MISSING_RE.search(blob)
         )
+
+    def _looks_path_claim(self, issue: ReviewIssue) -> bool:
+        blob = " ".join(
+            part for part in (issue.message, issue.suggestion or "", issue.rule or "") if part
+        )
+        return bool(_PATH_CLAIM_RE.search(blob) and _PATH_MISSING_RE.search(blob))
+
+    def _evaluate_path(
+        self,
+        issue: ReviewIssue,
+        repo_root: Path,
+    ) -> tuple[str, str | None, str]:
+        """Disprove a "path X does not exist" claim against tracked paths on HEAD."""
+        candidates = self._extract_paths(issue)
+        if not candidates:
+            return "uncertain", None, "could not extract a path from finding"
+
+        tracked_dirs, tracked_by_name = self._tracked_paths(repo_root)
+        if not tracked_dirs and not tracked_by_name:
+            return "uncertain", candidates[0], "could not list tracked paths on HEAD"
+
+        for candidate in candidates:
+            rel = candidate.strip("/")
+            if not rel:
+                continue
+            if (repo_root / rel).exists():
+                return (
+                    "disproven",
+                    candidate,
+                    f"{candidate} exists on PR HEAD",
+                )
+            # The model often gets the parent wrong while naming the right
+            # directory — ${CMAKE_SOURCE_DIR}/internal_headers when the tree
+            # actually has src/internal_headers.
+            name = PurePosixPath(rel).name
+            actual = tracked_by_name.get(name)
+            if actual:
+                return (
+                    "disproven",
+                    candidate,
+                    f"{name} exists on PR HEAD at {actual} "
+                    f"(claim named the wrong parent directory)",
+                )
+
+        return "uncertain", candidates[0], "claimed paths not found on HEAD"
+
+    def _extract_paths(self, issue: ReviewIssue) -> list[str]:
+        blob = " ".join(
+            part for part in (issue.message, issue.suggestion or "") if part
+        )
+        found: list[str] = []
+
+        def add(raw: str) -> None:
+            # ${CMAKE_SOURCE_DIR}/internal_headers → internal_headers
+            expanded = _CMAKE_VAR_RE.sub(
+                lambda m: "" if m.group(1) in _CMAKE_ROOT_VARS else m.group(0),
+                raw,
+            ).strip()
+            expanded = expanded.strip("\"'`()").strip()
+            if not expanded or "${" in expanded:
+                return
+            if expanded not in found:
+                found.append(expanded)
+
+        for pattern in (_BACKTICK_RE, _QUOTED_RE):
+            for match in pattern.finditer(blob):
+                for token in _PATH_TOKEN_RE.findall(match.group(1)):
+                    add(token)
+        if found:
+            return found
+
+        for token in _PATH_TOKEN_RE.findall(blob):
+            add(token)
+        return found
+
+    def _tracked_paths(self, repo_root: Path) -> tuple[set[str], dict[str, str]]:
+        """Return (directory set, basename → first matching path) for HEAD."""
+        cached = self._tracked_cache.get(repo_root)
+        if cached is not None:
+            return cached
+
+        dirs: set[str] = set()
+        by_name: dict[str, str] = {}
+        try:
+            proc = subprocess.run(
+                ["git", "-C", str(repo_root), "ls-files"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=True,
+            )
+            rels = proc.stdout.splitlines()
+        except (subprocess.SubprocessError, FileNotFoundError, OSError) as exc:
+            logger.debug(f"Path verifier could not list tracked files: {exc}")
+            self._tracked_cache[repo_root] = (dirs, by_name)
+            return dirs, by_name
+
+        for rel in rels:
+            if not rel:
+                continue
+            by_name.setdefault(PurePosixPath(rel).name, rel)
+            parent = PurePosixPath(rel).parent
+            while str(parent) not in (".", ""):
+                dirs.add(str(parent))
+                by_name.setdefault(parent.name, str(parent))
+                parent = parent.parent
+
+        self._tracked_cache[repo_root] = (dirs, by_name)
+        return dirs, by_name
 
     def _looks_include_claim(self, issue: ReviewIssue) -> bool:
         if issue.file and Path(issue.file).suffix.lower() not in _CPP_SUFFIXES:
