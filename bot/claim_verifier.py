@@ -7,13 +7,20 @@ Policy (confidence rule):
 
   1. Structural / NameError claims → symbol index (bound before cited line).
   2. Missing-dependency claims → package.json / requirements / pyproject on HEAD.
+  3. Missing-``#include`` claims → the C/C++ file's own include block on HEAD.
+
+Rationale for (3): a diff only shows changed hunks plus a few lines of context.
+An ``#include`` above the first hunk is invisible to the model, so "you use
+open() without including <fcntl.h>" is a reasonable inference from an
+incomplete picture. Checking the file on disk costs zero prompt tokens, where
+widening the diff window would cost them on every chunk.
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from loguru import logger
 
@@ -51,6 +58,30 @@ _DEPENDENCY_MISSING_RE = re.compile(
     r"will\s+lead\s+to\s+runtime\s+errors"
     r")\b"
 )
+
+_CPP_SUFFIXES = frozenset({
+    ".c", ".cc", ".cpp", ".cxx", ".c++",
+    ".h", ".hpp", ".hh", ".hxx", ".h++",
+    ".inl", ".ipp", ".m", ".mm",
+})
+
+# "missing #include", "header not included", "requires <fcntl.h>" style claims.
+_INCLUDE_CLAIM_RE = re.compile(
+    r"(?i)(?:"
+    r"#\s*include"
+    r"|\b(?:missing|absent|lacks?|lacking|needs?|requires?|add|without|no)\b"
+    r"[^.;]{0,48}?\b(?:include|header)\b"
+    r"|\b(?:include|header)\b[^.;]{0,48}?"
+    r"\b(?:missing|absent|required|needed|not\s+(?:included|present|found|declared))\b"
+    r")"
+)
+
+# Header spellings we can positively check: <foo.h>, "foo/bar.hpp", <cstring>.
+_INCLUDE_DIRECTIVE_RE = re.compile(r"#\s*include\s*[<\"]([^>\"]+)[>\"]")
+_HEADER_PATH_RE = re.compile(
+    r"[<\"'`]?\b([A-Za-z0-9_][A-Za-z0-9_./+-]*\.(?:h|hpp|hh|hxx|h\+\+|inl|ipp))\b[>\"'`]?"
+)
+_ANGLE_HEADER_RE = re.compile(r"<([A-Za-z][A-Za-z0-9_./+-]*)>")
 
 # Prefer explicit code mentions first.
 _BACKTICK_RE = re.compile(r"`([^`]+)`")
@@ -170,6 +201,22 @@ class ClaimVerifier:
         index_by_path = self._load_indexes(repo_root, changed_paths, indexes, issues)
 
         for issue in issues:
+            if self._looks_include_claim(issue):
+                confidence, symbol, reason = self._evaluate_include(issue, repo_root)
+                if confidence == "disproven":
+                    report.suppressed.append(
+                        SuppressionRecord(
+                            file=issue.file,
+                            line=issue.line,
+                            message=issue.message,
+                            symbol=symbol,
+                            reason=reason,
+                        )
+                    )
+                else:
+                    report.kept.append(issue)
+                continue
+
             if self._looks_dependency_claim(issue):
                 confidence, symbol, reason = self._evaluate_dependency(issue, declared)
                 if confidence == "disproven":
@@ -235,6 +282,108 @@ class ClaimVerifier:
         return bool(
             _DEPENDENCY_MANIFEST_RE.search(blob) and _DEPENDENCY_MISSING_RE.search(blob)
         )
+
+    def _looks_include_claim(self, issue: ReviewIssue) -> bool:
+        if issue.file and Path(issue.file).suffix.lower() not in _CPP_SUFFIXES:
+            return False
+        blob = " ".join(
+            part for part in (issue.message, issue.suggestion or "", issue.rule or "") if part
+        )
+        return bool(_INCLUDE_CLAIM_RE.search(blob))
+
+    def _evaluate_include(
+        self,
+        issue: ReviewIssue,
+        repo_root: Path,
+    ) -> tuple[str, str | None, str]:
+        """Disprove a missing-#include claim by reading the file's own includes."""
+        if not issue.file:
+            return "uncertain", None, "no file on finding"
+
+        claimed = self._extract_headers(issue)
+        if not claimed:
+            return "uncertain", None, "could not extract a header name from finding"
+
+        present = self._read_includes(repo_root, issue.file)
+        if present is None:
+            return "uncertain", claimed[0], f"could not read {issue.file} on HEAD"
+        if not present:
+            return "uncertain", claimed[0], f"no #include directives found in {issue.file}"
+
+        # Match on the full path first, then bare filename — <sys/mman.h> cited
+        # as `mman.h` should still count as present.
+        by_base: dict[str, str] = {}
+        for inc in present:
+            by_base.setdefault(PurePosixPath(inc).name.lower(), inc)
+
+        found: list[str] = []
+        missing: list[str] = []
+        for header in claimed:
+            key = header.lower()
+            if key in {p.lower() for p in present}:
+                found.append(header)
+            elif PurePosixPath(header).name.lower() in by_base:
+                found.append(by_base[PurePosixPath(header).name.lower()])
+            else:
+                missing.append(header)
+
+        if found and not missing:
+            joined = ", ".join(dict.fromkeys(found))
+            return (
+                "disproven",
+                found[0],
+                f"{joined} already included in {issue.file} on PR HEAD "
+                f"(outside the diff window — diff-only false positive)",
+            )
+        if found and missing:
+            return (
+                "uncertain",
+                missing[0],
+                f"partial: {', '.join(found)} included; {', '.join(missing)} not found",
+            )
+        return "uncertain", missing[0], "claimed headers not found in the file's include block"
+
+    def _extract_headers(self, issue: ReviewIssue) -> list[str]:
+        blob = " ".join(
+            part for part in (issue.message, issue.suggestion or "") if part
+        )
+        found: list[str] = []
+
+        def add(name: str) -> None:
+            name = name.strip().strip("<>\"'`")
+            if name and name not in found:
+                found.append(name)
+
+        # Strongest signal: the finding literally spells the directive.
+        for match in _INCLUDE_DIRECTIVE_RE.finditer(blob):
+            add(match.group(1))
+        if found:
+            return found
+
+        for match in _HEADER_PATH_RE.finditer(blob):
+            add(match.group(1))
+        # Extension-less C++ std headers (<vector>, <cstring>) only in angles,
+        # so we don't mistake prose for a header name.
+        for match in _ANGLE_HEADER_RE.finditer(blob):
+            add(match.group(1))
+
+        return found
+
+    def _read_includes(self, repo_root: Path, rel_path: str) -> set[str] | None:
+        path = (repo_root / rel_path).resolve()
+        try:
+            path.relative_to(repo_root.resolve())
+        except ValueError:
+            logger.debug(f"Include scan refused path outside repo: {rel_path}")
+            return None
+        if not path.is_file():
+            return None
+        try:
+            source = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError as exc:
+            logger.debug(f"Include scan read failed for {rel_path}: {exc}")
+            return None
+        return {m.group(1) for m in _INCLUDE_DIRECTIVE_RE.finditer(source)}
 
     def _evaluate_dependency(
         self,

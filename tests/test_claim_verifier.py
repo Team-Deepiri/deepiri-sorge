@@ -249,3 +249,102 @@ def test_keeps_missing_dep_claim_when_package_absent(tmp_path: Path):
     )
     verified = ClaimVerifier().verify_result(result, repo_root=tmp_path)
     assert len(verified.issues) == 1
+
+
+def _write_mmap_cpp(root: Path) -> Path:
+    """Mirrors deepiri-crankl mmap.cpp: includes sit above the first diff hunk."""
+    path = root / "src" / "mmap.cpp"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        """#include <sys/mman.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <cstring>
+
+namespace crankl {
+
+MappedRegion open_region(const char* path) {
+    int fd = open(path, O_RDONLY);
+    return MappedRegion(fd);
+}
+
+}  // namespace crankl
+"""
+    )
+    return path
+
+
+def test_include_claim_suppressed_when_header_already_present(tmp_path: Path):
+    _write_mmap_cpp(tmp_path)
+    issue = ReviewIssue(
+        severity="high",
+        file="src/mmap.cpp",
+        line=9,
+        message="`open()` is used but `#include <fcntl.h>` is missing.",
+        suggestion="Add `#include <fcntl.h>` at the top of the file.",
+    )
+    report = ClaimVerifier().verify_issues([issue], repo_root=tmp_path)
+    assert report.kept == []
+    assert report.suppressed_count == 1
+    assert "fcntl.h" in report.suppressed[0].reason
+
+
+def test_include_claim_matches_on_bare_filename(tmp_path: Path):
+    _write_mmap_cpp(tmp_path)
+    issue = ReviewIssue(
+        severity="medium",
+        file="src/mmap.cpp",
+        line=9,
+        message="Missing header: mman.h is required for munmap().",
+    )
+    report = ClaimVerifier().verify_issues([issue], repo_root=tmp_path)
+    assert report.kept == []
+    assert report.suppressed_count == 1
+
+
+def test_include_claim_kept_when_header_genuinely_absent(tmp_path: Path):
+    _write_mmap_cpp(tmp_path)
+    issue = ReviewIssue(
+        severity="high",
+        file="src/mmap.cpp",
+        line=9,
+        message="`std::vector` is used but `#include <vector>` is missing.",
+    )
+    report = ClaimVerifier().verify_issues([issue], repo_root=tmp_path)
+    assert report.kept == [issue]
+    assert report.suppressed_count == 0
+
+
+def test_include_claim_kept_when_only_some_headers_present(tmp_path: Path):
+    _write_mmap_cpp(tmp_path)
+    issue = ReviewIssue(
+        severity="high",
+        file="src/mmap.cpp",
+        line=9,
+        message="Missing `#include <fcntl.h>` and `#include <vector>`.",
+    )
+    report = ClaimVerifier().verify_issues([issue], repo_root=tmp_path)
+    assert report.kept == [issue]
+
+
+def test_include_claim_ignored_for_non_cpp_files(tmp_path: Path):
+    _write_compiler(tmp_path)
+    issue = ReviewIssue(
+        severity="low",
+        file="quantum_core/compiler/compiler.py",
+        line=3,
+        message="missing import header for QUASAR",
+    )
+    report = ClaimVerifier().verify_issues([issue], repo_root=tmp_path)
+    assert report.kept == [issue]
+
+
+def test_include_claim_uncertain_when_file_missing_on_head(tmp_path: Path):
+    issue = ReviewIssue(
+        severity="high",
+        file="src/gone.cpp",
+        line=4,
+        message="`open()` used without `#include <fcntl.h>`.",
+    )
+    report = ClaimVerifier().verify_issues([issue], repo_root=tmp_path)
+    assert report.kept == [issue]
