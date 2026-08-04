@@ -348,3 +348,113 @@ def test_include_claim_uncertain_when_file_missing_on_head(tmp_path: Path):
     )
     report = ClaimVerifier().verify_issues([issue], repo_root=tmp_path)
     assert report.kept == [issue]
+
+
+_MMAP_HPP = """#pragma once
+#include <sys/mman.h>
+#include <cstddef>
+
+#define CRANKL_PAGE_SIZE 4096
+
+namespace crankl {
+
+using RegionSize = std::size_t;
+
+class MappedRegion {
+ public:
+  explicit MappedRegion(int fd);
+  ~MappedRegion() { reset(); }
+  void reset();
+
+ private:
+  void* base_;
+  RegionSize size_;
+};
+
+struct ShardHeader {
+  RegionSize offset;
+};
+
+}  // namespace crankl
+"""
+
+
+def _write_mmap_header(root: Path) -> Path:
+    path = root / "src" / "internal_headers" / "mmap_region.hpp"
+    path.parent.mkdir(parents=True)
+    path.write_text(_MMAP_HPP)
+    return path
+
+
+def test_symbol_indexer_parses_cpp_header(tmp_path: Path):
+    _write_mmap_header(tmp_path)
+    indexes = SymbolIndexer().index_files(
+        tmp_path, ["src/internal_headers/mmap_region.hpp"]
+    )
+    assert len(indexes) == 1
+    names = indexes[0].names()
+
+    assert "MappedRegion" in names
+    assert "ShardHeader" in names
+    assert "reset" in names
+    assert "~MappedRegion" in names
+    assert "RegionSize" in names
+    assert "CRANKL_PAGE_SIZE" in names
+    # #include anchors on the header stem.
+    assert "mman" in names
+
+    region = indexes[0].first_binding("MappedRegion")
+    assert region is not None and region.kind == "class"
+    alias = indexes[0].first_binding("RegionSize")
+    assert alias is not None and alias.kind == "alias"
+
+
+def test_symbol_indexer_skips_cpp_control_flow_and_comments(tmp_path: Path):
+    path = tmp_path / "src" / "loader.cpp"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        """#include "mmap_region.hpp"
+
+/* class CommentedOut {
+   void ghost();
+ }; */
+
+void load_shard(int fd) {
+  if (fd < 0) { return; }
+  for (int i = 0; i < 4; ++i) {
+    while (i > 2) { break; }
+  }
+  // void commented_fn();
+}
+"""
+    )
+    names = SymbolIndexer().index_files(tmp_path, ["src/loader.cpp"])[0].names()
+
+    assert "load_shard" in names
+    for absent in ("if", "for", "while", "return", "ghost", "commented_fn", "CommentedOut"):
+        assert absent not in names
+
+
+def test_verifier_disproves_undefined_symbol_claim_in_cpp(tmp_path: Path):
+    _write_mmap_header(tmp_path)
+    issue = ReviewIssue(
+        severity="high",
+        file="src/internal_headers/mmap_region.hpp",
+        line=20,
+        message="`RegionSize` is not defined anywhere in this file.",
+    )
+    report = ClaimVerifier().verify_issues([issue], repo_root=tmp_path)
+    assert report.kept == []
+    assert report.suppressed_count == 1
+
+
+def test_verifier_keeps_undefined_claim_for_absent_cpp_symbol(tmp_path: Path):
+    _write_mmap_header(tmp_path)
+    issue = ReviewIssue(
+        severity="high",
+        file="src/internal_headers/mmap_region.hpp",
+        line=20,
+        message="`ShardFooter` is not defined anywhere in this file.",
+    )
+    report = ClaimVerifier().verify_issues([issue], repo_root=tmp_path)
+    assert report.kept == [issue]

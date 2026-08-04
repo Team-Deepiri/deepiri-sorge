@@ -13,7 +13,36 @@ from pathlib import Path
 
 from loguru import logger
 
-SOURCE_EXTENSIONS = frozenset({".py"})
+PYTHON_EXTENSIONS = frozenset({".py"})
+CPP_EXTENSIONS = frozenset({
+    ".c", ".cc", ".cpp", ".cxx", ".h", ".hpp", ".hh", ".hxx",
+})
+SOURCE_EXTENSIONS = PYTHON_EXTENSIONS | CPP_EXTENSIONS
+
+# Keywords that take a parenthesised clause and would otherwise read as calls.
+_CPP_CONTROL_KEYWORDS = frozenset({
+    "if", "else", "for", "while", "switch", "catch", "return", "sizeof",
+    "do", "case", "throw", "new", "delete", "static_assert", "decltype",
+    "noexcept", "alignof", "and", "or", "not", "constexpr", "explicit",
+})
+
+_CPP_INCLUDE_RE = re.compile(r"^\s*#\s*include\s*[<\"]([^>\"]+)[>\"]")
+_CPP_DEFINE_RE = re.compile(r"^\s*#\s*define\s+(\w+)")
+_CPP_TYPE_RE = re.compile(
+    r"^\s*(?:template\s*<[^>]*>\s*)?"
+    r"(class|struct|union|namespace|enum(?:\s+class)?)\s+(\w+)"
+)
+_CPP_USING_RE = re.compile(r"^\s*using\s+(\w+)\s*=")
+_CPP_TYPEDEF_RE = re.compile(r"^\s*typedef\s+.+?\b(\w+)\s*;")
+# Definition (ends in `{`) or declaration (ends in `;`) with a parameter list.
+_CPP_FUNC_RE = re.compile(
+    r"^\s*(?:template\s*<[^>]*>\s*)?"
+    r"(?:[A-Za-z_][\w:<>,\s\*&\[\]]*?\s[\*&\s]*)?"
+    r"(~?\w+)\s*\([^;{]*\)\s*"
+    r"(?:const\s*)?(?:noexcept\s*)?(?:override\s*)?(?:final\s*)?"
+    r"(?:=\s*(?:0|default|delete)\s*)?"
+    r"[;{]"
+)
 
 
 @dataclass(frozen=True)
@@ -100,10 +129,75 @@ class SymbolIndexer:
             except OSError as exc:
                 logger.debug(f"Symbol index read failed for {rel}: {exc}")
                 continue
-            bindings = self._parse_python(source)
+            if Path(rel).suffix in CPP_EXTENSIONS:
+                bindings = self._parse_cpp(source)
+            else:
+                bindings = self._parse_python(source)
             if bindings:
                 indexes.append(FileSymbolIndex(path=rel, bindings=bindings))
         return indexes
+
+    def _parse_cpp(self, source: str) -> list[SymbolBinding]:
+        """Regex scan for C/C++ bindings.
+
+        Unlike the Python path this indexes at any nesting depth: C++ puts
+        member functions inside class bodies and splits declaration from
+        definition across header and source, so a module-scope-only index
+        would be empty for exactly the files we care about.
+        """
+        bindings: list[SymbolBinding] = []
+        seen: set[tuple[str, int]] = set()
+        in_block_comment = False
+
+        def add(name: str, lineno: int, kind: str, target: str | None = None) -> None:
+            if not name or (name, lineno) in seen:
+                return
+            seen.add((name, lineno))
+            bindings.append(SymbolBinding(name, lineno, kind, target=target))
+
+        for lineno, raw in enumerate(source.splitlines(), start=1):
+            line = raw
+            if in_block_comment:
+                end = line.find("*/")
+                if end == -1:
+                    continue
+                line = line[end + 2 :]
+                in_block_comment = False
+            start = line.find("/*")
+            if start != -1:
+                if "*/" in line[start:]:
+                    line = line[:start] + line[line.find("*/", start) + 2 :]
+                else:
+                    line = line[:start]
+                    in_block_comment = True
+            line = line.split("//", 1)[0]
+            if not line.strip():
+                continue
+
+            if match := _CPP_INCLUDE_RE.match(line):
+                header = match.group(1)
+                add(Path(header).stem, lineno, "import", target=header)
+                continue
+            if match := _CPP_DEFINE_RE.match(line):
+                add(match.group(1), lineno, "alias")
+                continue
+            if match := _CPP_TYPE_RE.match(line):
+                kind = "class" if not match.group(1).startswith("namespace") else "alias"
+                add(match.group(2), lineno, kind)
+                continue
+            if match := _CPP_USING_RE.match(line):
+                add(match.group(1), lineno, "alias")
+                continue
+            if match := _CPP_TYPEDEF_RE.match(line):
+                add(match.group(1), lineno, "alias")
+                continue
+            if match := _CPP_FUNC_RE.match(line):
+                name = match.group(1)
+                if name.lstrip("~") in _CPP_CONTROL_KEYWORDS:
+                    continue
+                add(name, lineno, "function")
+
+        return bindings
 
     def _parse_python(self, source: str) -> list[SymbolBinding]:
         try:
