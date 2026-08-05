@@ -99,8 +99,23 @@ class FileSplitter:
         groups = self._dependency_groups(diff)
         chunks: list[ReviewChunk] = []
 
+        # Dependency grouping keeps import-connected files together for
+        # context, but a PR spanning several unrelated packages (or lots of
+        # config/CSS/docs with no detected import edges) leaves most files
+        # as their own singleton group. Packing each group separately then
+        # burns one full LLM request per file even when a dozen of them
+        # would comfortably fit in a single chunk together. Split off the
+        # groups that already fit within budget on their own and bin-pack
+        # those together; only groups that need real splitting go through
+        # `_pack_group` individually.
+        small_groups: list[list[str]] = []
         for group in groups:
-            chunks.extend(self._pack_group(diff, group))
+            if self._group_tokens(diff, group) <= self.chunk_budget:
+                small_groups.append(group)
+            else:
+                chunks.extend(self._pack_group(diff, group))
+
+        chunks.extend(self._bin_pack_groups(diff, small_groups))
 
         return chunks or [
             ReviewChunk(
@@ -109,6 +124,63 @@ class FileSplitter:
                 estimated_tokens=estimate_tokens(diff.raw),
             )
         ]
+
+    def _group_tokens(self, diff: ParsedDiff, group: list[str]) -> int:
+        return sum(
+            estimate_tokens(diff.file_changes[p].raw_diff)
+            for p in group
+            if p in diff.file_changes
+        )
+
+    def _bin_pack_groups(
+        self, diff: ParsedDiff, groups: list[list[str]]
+    ) -> list[ReviewChunk]:
+        """Greedily combine unrelated small groups into shared chunks.
+
+        Each input group already fits within ``chunk_budget`` on its own;
+        this just avoids sending N nearly-empty requests when they'd fit
+        together in far fewer. Largest-first bin packing keeps the chunk
+        count low.
+        """
+        if not groups:
+            return []
+
+        sized = sorted(
+            ((g, self._group_tokens(diff, g)) for g in groups),
+            key=lambda gt: gt[1],
+            reverse=True,
+        )
+
+        chunks: list[ReviewChunk] = []
+        current_files: list[str] = []
+        current_tokens = 0
+
+        for group, tokens in sized:
+            if current_files and current_tokens + tokens > self.chunk_budget:
+                sub = diff.slice_files(current_files)
+                chunks.append(
+                    ReviewChunk(
+                        files=current_files,
+                        parsed_diff=sub,
+                        estimated_tokens=estimate_tokens(sub.raw),
+                    )
+                )
+                current_files = []
+                current_tokens = 0
+            current_files.extend(group)
+            current_tokens += tokens
+
+        if current_files:
+            sub = diff.slice_files(current_files)
+            chunks.append(
+                ReviewChunk(
+                    files=current_files,
+                    parsed_diff=sub,
+                    estimated_tokens=estimate_tokens(sub.raw),
+                )
+            )
+
+        return chunks
 
     def _patterns_for(self, path: str) -> list[re.Pattern]:
         """Return import patterns matching the file extension."""
