@@ -27,7 +27,11 @@ _JS_ISH_RE = re.compile(
     r"""^\+\s*import\s+(?:type\b|[\w*{].*\s+from\s+['"]|['"])"""
 )
 _PY_IMPORT_RE = re.compile(
-    r"^\+\s*(?:from\s+([\w.]+)\s+import|import\s+([\w.]+))(?:\s*$|\s*[;#])"
+    r"^\+\s*(?:"
+    r"from\s+([\w.]+)\s+import\b"
+    r"|"
+    r"import\s+([\w.]+)(?:\s+as\s+\w+)?\s*(?:,|;|#|$)"
+    r")"
 )
 
 # Node core modules (bare + node: protocol). Keep compact — prefix rules cover most.
@@ -126,7 +130,8 @@ def extract_imported_packages(diff: ParsedDiff) -> list[str]:
         if not js_hit and not _JS_ISH_RE.match(line):
             m = _PY_IMPORT_RE.match(line)
             if m:
-                candidates.append(m.group(1) or m.group(2) or "")
+                raw = m.group(1) or m.group(2) or ""
+                candidates.append(raw.split(".")[0])
 
         for raw in candidates:
             pkg = _normalize_import_package(raw)
