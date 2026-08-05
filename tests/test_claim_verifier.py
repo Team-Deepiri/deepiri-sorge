@@ -527,3 +527,69 @@ def test_path_claim_ignored_without_a_missing_assertion(tmp_path: Path):
     )
     report = ClaimVerifier().verify_issues([issue], repo_root=tmp_path)
     assert report.kept == [issue]
+
+
+def _write_python_manifests(root: Path) -> None:
+    (root / "pyproject.toml").write_text(
+        '[project]\ndependencies = ["transformers>=4.40.0,<5.0.0", "numpy>=2.1.0"]\n'
+    )
+    (root / "requirements.txt").write_text(
+        "transformers>=4.40.0\nnumpy>=2.1.0\npytest>=7\n"
+    )
+
+
+def test_dependency_claim_without_a_named_manifest_is_still_verified(tmp_path: Path):
+    """HELOX #117: the model wrote "the project's dependency manifests" instead
+    of naming pyproject.toml, so the verifier skipped it and three false
+    positives shipped."""
+    _write_python_manifests(tmp_path)
+    issue = ReviewIssue(
+        severity="critical",
+        file="evaluation/main.py",
+        line=69,
+        message=(
+            "The transformers library is imported in evaluation/__main__.py and "
+            "evaluation/subjects.py but is not declared in the project's "
+            "dependency manifests. This will lead to ImportError."
+        ),
+        suggestion="Add transformers to the project's dependency list.",
+    )
+    report = ClaimVerifier().verify_issues([issue], repo_root=tmp_path)
+    assert report.kept == []
+    assert report.suppressed[0].symbol == "transformers"
+
+
+def test_dependency_claim_survives_apostrophes_in_prose(tmp_path: Path):
+    """"the project's ... project's" reads as a quoted span; the fragment
+    between the apostrophes must not be mistaken for a package name."""
+    _write_python_manifests(tmp_path)
+    issue = ReviewIssue(
+        severity="low",
+        file="tests/test_evaluation_framework.py",
+        line=15,
+        message=(
+            "The pytest library is imported in tests/test_evaluation_framework.py "
+            "but is not declared in the project's dependency manifests."
+        ),
+        suggestion="Add pytest to the project's development/test dependency list.",
+    )
+    report = ClaimVerifier().verify_issues([issue], repo_root=tmp_path)
+    assert report.kept == []
+    assert report.suppressed[0].symbol == "pytest"
+
+
+def test_dependency_claim_kept_when_package_really_is_missing(tmp_path: Path):
+    _write_python_manifests(tmp_path)
+    issue = ReviewIssue(
+        severity="high",
+        file="evaluation/subjects.py",
+        line=5,
+        message=(
+            "The torchvision library is imported but is not declared in the "
+            "project's dependency manifests."
+        ),
+        suggestion="Add torchvision to the dependency list.",
+    )
+    report = ClaimVerifier().verify_issues([issue], repo_root=tmp_path)
+    assert report.kept == [issue]
+    assert report.suppressed_count == 0

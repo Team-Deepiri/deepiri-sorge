@@ -43,10 +43,19 @@ _STRUCTURAL_RE = re.compile(
 )
 
 # "X is not in package.json / requirements / lockfile" style claims.
+#
+# Models often describe the manifest generically — "the project's dependency
+# manifests", "the dependency list" — without naming a file. Requiring a
+# literal filename here let three false positives through on a HELOX PR where
+# transformers/numpy/pytest were all declared in pyproject.toml. Match the
+# concept, not the spelling.
 _DEPENDENCY_MANIFEST_RE = re.compile(
     r"(?i)\b("
     r"package\.json|package-lock\.json|npm|yarn\.lock|pnpm-lock|"
-    r"requirements(?:\.txt)?|pyproject\.toml|poetry\.lock|Pipfile(?:\.lock)?"
+    r"requirements(?:\.txt)?|pyproject\.toml|poetry\.lock|Pipfile(?:\.lock)?|"
+    r"dependency\s+manifests?|dependenc(?:y|ies)\s+list|manifest\s+files?|"
+    r"dependency\s+(?:declarations?|specifications?)|"
+    r"declared\s+dependenc(?:y|ies)|project'?s?\s+dependenc(?:y|ies)"
     r")\b"
 )
 _DEPENDENCY_MISSING_RE = re.compile(
@@ -117,6 +126,11 @@ _IDENT_RE = re.compile(r"\b([A-Z][A-Za-z0-9_]{2,}|[a-z_][a-z0-9_]{3,})\b")
 _PKG_NAME_RE = re.compile(
     r"^(?:@[A-Za-z0-9._-]+/)?[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$"
 )
+# "the transformers library" / "package numpy" — unquoted prose mentions.
+_PKG_CONTEXT_RE = re.compile(
+    r"(?i)\b(?:the\s+)?([A-Za-z][\w.-]{1,40})\s+(?:library|package|module|dependency)\b"
+    r"|\b(?:library|package|module|dependency)\s+([A-Za-z][\w.-]{1,40})\b"
+)
 _STOPWORDS = frozenset({
     "this", "that", "with", "from", "import", "class", "def", "return",
     "true", "false", "none", "null", "self", "alias", "before", "after",
@@ -127,6 +141,14 @@ _STOPWORDS = frozenset({
     "python", "issue", "should", "would", "could", "seems", "appears",
     "package", "json", "lock", "dependencies", "dependency", "npm", "install",
     "runtime", "errors", "explicitly", "added", "listed", "present",
+    # Nouns that follow "dependency"/"package" in prose and would otherwise be
+    # read as the package name itself ("the project's dependency manifests").
+    "manifest", "manifests", "list", "lists", "declaration", "declarations",
+    "specification", "specifications", "version", "versions", "requirement",
+    "requirements", "section", "sections", "entry", "entries", "block",
+    # Qualifiers that precede "dependency" ("development/test dependency list").
+    "test", "tests", "testing", "development", "dev", "optional", "build",
+    "peer", "transitive", "external", "third", "party", "direct", "indirect",
 })
 
 
@@ -594,13 +616,31 @@ class ClaimVerifier:
                     "npm install",
                 }:
                     continue
-                name = raw.split()[0]
-                if not _PKG_NAME_RE.match(name):
+                # Apostrophes in prose ("the project's dependency list") look
+                # like quote delimiters, so a "quoted" span containing spaces
+                # is almost certainly a sentence fragment, not a package name.
+                if len(raw.split()) > 1:
+                    continue
+                name = raw
+                if len(name) < 2 or not _PKG_NAME_RE.match(name):
                     continue
                 if name.lower() in _STOPWORDS:
                     continue
                 if name not in found:
                     found.append(name)
+        if found:
+            return found
+
+        # Nothing quoted — fall back to "the transformers library" / "package
+        # numpy" phrasing, which is how models write it in prose.
+        for match in _PKG_CONTEXT_RE.finditer(blob):
+            name = (match.group(1) or match.group(2) or "").strip()
+            if not name or name.lower() in _STOPWORDS:
+                continue
+            if not _PKG_NAME_RE.match(name):
+                continue
+            if name not in found:
+                found.append(name)
         return found
 
     def _evaluate(
