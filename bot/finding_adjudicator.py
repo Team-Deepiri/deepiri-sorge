@@ -18,7 +18,12 @@ from typing import Any
 import requests
 from loguru import logger
 
-from bot.schemas import ReviewIssue, ReviewResult, compute_score_from_issues
+from bot.schemas import (
+    ReviewIssue,
+    ReviewResult,
+    compute_score_from_issues,
+    is_no_score,
+)
 from bot.utils.http_retry import post_with_retry
 from bot.utils.response_parser import _extract_json_object
 
@@ -343,11 +348,18 @@ class FindingAdjudicator:
             ],
         }
 
+        # Never derive a score for a run that reviewed nothing. Dropping the
+        # lone skip-record would otherwise leave an empty issue list, which
+        # scores a perfect 10.0 — the deepiri-crankl#28 failure.
+        score = result.score if is_no_score(result.review_type) else (
+            compute_score_from_issues(report.kept)
+        )
+
         return ReviewResult(
             summary=result.summary,
             issues=report.kept,
             recommendations=result.recommendations,
-            score=compute_score_from_issues(report.kept),
+            score=score,
             latency_ms=result.latency_ms,
             model=result.model,
             tokens_used=result.tokens_used,

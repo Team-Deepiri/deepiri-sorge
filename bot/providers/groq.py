@@ -41,9 +41,16 @@ class GroqProvider:
             quality_prior=self.quality_prior,
         )
 
-    def review(self, chunk: ReviewChunk, run: RunContext) -> ProviderResult:
+    def review(
+        self,
+        chunk: ReviewChunk,
+        run: RunContext,
+        *,
+        prior_partial: str | None = None,
+    ) -> ProviderResult:
         self._runner._last_http_status = None
         self._runner._last_retry_after = None
+        self._runner._last_raw_response = None
         self._runner._effective_input_tokens = (
             max(0, chunk.estimated_tokens) + max(0, run.prompt_overhead_tokens)
         )
@@ -52,6 +59,7 @@ class GroqProvider:
             runner=self._runner,
             chunk=chunk,
             run=run,
+            prior_partial=prior_partial,
         )
         if not result.ok and result.status_code is None:
             status = getattr(self._runner, "_last_http_status", None)
@@ -66,5 +74,6 @@ class GroqProvider:
                 result=result.result,
                 error=result.error,
                 timed_out=bool(timed_out),
+                partial_output=result.partial_output,
             )
         return result

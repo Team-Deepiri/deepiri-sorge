@@ -25,4 +25,6 @@ class Provider(Protocol):
         self,
         chunk: ReviewChunk,
         run: RunContext,
+        *,
+        prior_partial: str | None = None,
     ) -> ProviderResult: ...

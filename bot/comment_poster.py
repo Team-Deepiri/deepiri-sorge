@@ -4,6 +4,7 @@ import requests
 from loguru import logger
 
 from bot.runners.base import ReviewResult
+from bot.schemas import is_no_score
 from bot.utils.formatting import (
     clean_multiline_text,
     format_blockquote,
@@ -198,7 +199,7 @@ class CommentPoster:
         return "\n".join(lines)
 
     def _format_review_comment(self, review: ReviewResult) -> str:  # type: ignore
-        if getattr(review, "review_type", "") == "rate_limited":
+        if is_no_score(getattr(review, "review_type", "")):
             return self._format_rate_limited_comment(review)
 
         lines = [
