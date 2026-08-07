@@ -8,6 +8,7 @@ from pathlib import Path
 
 from loguru import logger
 
+from bot.build_status import fetch_build_verdict
 from bot.claim_verifier import ClaimVerifier
 from bot.comment_poster import CommentPoster
 from bot.config import Config
@@ -397,7 +398,19 @@ def main() -> None:
 
     if review_result and config.claim_verifier.enabled:
         before = len(review_result.issues)
-        review_result = ClaimVerifier().verify_result(
+        # CI already compiled this SHA; a green build disproves any predicted
+        # compile failure for free. Unknown verdict suppresses nothing.
+        head_sha = os.getenv("SORGE_HEAD_SHA", "")
+        build_green, build_reason = fetch_build_verdict(
+            repo=args.repo or "",
+            sha=head_sha,
+            token=github_token or "",
+        )
+        logger.info(f"CI build verdict for claim checks: green={build_green} ({build_reason})")
+        review_result = ClaimVerifier(
+            build_green=build_green,
+            build_sha=head_sha,
+        ).verify_result(
             review_result,
             repo_root=repo_root,
             changed_paths=parsed_diff.files,
