@@ -34,12 +34,12 @@ class ProviderResult:
         return self.status_code == 413
 
     @property
-    def is_capacity_failure(self) -> bool:
-        """Transient capacity / unusable response — not a completed review."""
+    def is_quality_unusable(self) -> bool:
+        """Model returned HTTP 200 but unusable review JSON — not a provider RPM/RPD issue."""
         if self.is_rate_limited or self.timed_out:
-            return True
-        if self.status_code is not None and self.status_code >= 500:
-            return True
+            return False
+        if self.status_code is not None and self.status_code >= 400:
+            return False
         err = (self.error or "").lower()
         return any(
             token in err
@@ -48,11 +48,28 @@ class ProviderResult:
                 "empty_or_invalid",
                 "non_json",
                 "truncated",
+                "truncated_vacuous_review",
                 "parse_warning",
-                "timeout",
+            )
+        )
+
+    @property
+    def is_capacity_failure(self) -> bool:
+        """True provider capacity: 429 / 5xx / timeout. Excludes vacuous truncated JSON."""
+        if self.is_rate_limited or self.timed_out:
+            return True
+        if self.status_code is not None and self.status_code >= 500:
+            return True
+        if self.is_quality_unusable:
+            return False
+        err = (self.error or "").lower()
+        return any(
+            token in err
+            for token in (
                 "http_429",
                 "429",
                 "rate limit",
+                "timeout",
             )
         )
 

@@ -26,6 +26,7 @@ class OpenRouterRunner(BaseRunner):
         self,
         api_key: str | None = None,
         model: str | None = None,
+        models: list[str] | None = None,
         endpoint: str | None = None,
         cache_config: CacheConfig | None = None,
         http_retries: int = 3,
@@ -34,6 +35,18 @@ class OpenRouterRunner(BaseRunner):
     ):
         super().__init__(api_key or os.getenv("OPENROUTER_API_KEY"), cache_config)
         self.model = model or self.DEFAULT_MODEL
+        ordered = list(models or [])
+        if self.model not in ordered:
+            ordered = [self.model, *ordered]
+        # Dedupe while preserving order (free-tier failover chain).
+        seen: set[str] = set()
+        self.models: list[str] = []
+        for m in ordered:
+            if m and m not in seen:
+                seen.add(m)
+                self.models.append(m)
+        if not self.models:
+            self.models = [self.DEFAULT_MODEL]
         self.endpoint = endpoint or self.DEFAULT_ENDPOINT
         self.http_retries = http_retries
         self.http_timeout = http_timeout
@@ -110,7 +123,7 @@ class OpenRouterRunner(BaseRunner):
 
         logger.debug(f"Calling OpenRouter with model: {self.model}")
 
-        response = self._post_openrouter(payload, headers)
+        response = self._post_openrouter_with_model_failover(payload, headers)
         latency_ms = (time.time() - start_time) * 1000
 
         data = response.json()
@@ -131,6 +144,39 @@ class OpenRouterRunner(BaseRunner):
             tokens_used=tokens_used,
             review_type="openrouter",
         )
+
+    def _post_openrouter_with_model_failover(
+        self, payload: dict, headers: dict
+    ) -> requests.Response:
+        """Try free models in order on HTTP 429 without raising soft RPD burns mid-call."""
+        last_exc: requests.HTTPError | None = None
+        for idx, model in enumerate(self.models):
+            attempt = dict(payload)
+            attempt["model"] = model
+            self.model = model
+            try:
+                logger.debug(f"Calling OpenRouter with model: {model}")
+                return self._post_openrouter(attempt, headers)
+            except requests.HTTPError as exc:
+                status = getattr(exc.response, "status_code", None)
+                self._last_http_status = status
+                if status == 429 and idx + 1 < len(self.models):
+                    logger.warning(
+                        f"OpenRouter 429 on {model}; failing over to {self.models[idx + 1]}"
+                    )
+                    last_exc = exc
+                    if exc.response is not None:
+                        raw = exc.response.headers.get("Retry-After")
+                        if raw:
+                            try:
+                                self._last_retry_after = float(raw)
+                            except ValueError:
+                                pass
+                    continue
+                raise
+        if last_exc:
+            raise last_exc
+        raise requests.RequestException("OpenRouter model failover exhausted")
 
     def _post_openrouter(self, payload: dict, headers: dict) -> requests.Response:
         try:

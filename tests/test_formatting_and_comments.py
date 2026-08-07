@@ -118,11 +118,59 @@ class TestCommentPosterFormatting:
 
         body = CommentPoster()._format_review_comment(review)
 
-        assert "Temporarily unavailable" in body
+        assert "Temporarily unavailable" in body or "Deferred" in body
         assert "Quality Score" not in body
         assert "needs redesign" not in body
         assert "/sorge" in body
         assert "not a code review result" in body
+
+    def test_format_soft_quota_comment_is_distinct_from_http_429(self):
+        soft = ReviewResult(
+            summary="Gemini soft daily quota is exhausted.",
+            issues=[],
+            recommendations=["Wait for UTC day roll"],
+            score=0.0,
+            model="none",
+            latency_ms=0.0,
+            review_type="soft_quota_exhausted",
+            routing_meta={
+                "deferral_class": "soft_quota_exhausted",
+                "quota": {"gemini": {"limit": 20, "used": 20, "remaining": 0}},
+            },
+        )
+        http = ReviewResult(
+            summary="Provider HTTP 429 rate limits blocked the review.",
+            issues=[],
+            recommendations=["Wait for 429 cooldowns"],
+            score=0.0,
+            model="none",
+            latency_ms=0.0,
+            review_type="http_429",
+            routing_meta={"deferral_class": "http_429"},
+        )
+        soft_body = CommentPoster()._format_review_comment(soft)
+        http_body = CommentPoster()._format_review_comment(http)
+        assert "soft daily quota" in soft_body.lower()
+        assert "HTTP 429" in http_body
+        assert soft_body != http_body
+        assert "`soft_quota_exhausted`" in soft_body
+        assert "`http_429`" in http_body
+
+    def test_format_vacuous_comment_is_distinct(self):
+        review = ReviewResult(
+            summary="Providers returned truncated or empty review JSON.",
+            issues=[],
+            recommendations=["Re-run /sorge"],
+            score=0.0,
+            model="none",
+            latency_ms=0.0,
+            review_type="vacuous_or_truncated",
+            routing_meta={"deferral_class": "vacuous_or_truncated"},
+        )
+        body = CommentPoster()._format_review_comment(review)
+        assert "truncated/empty" in body.lower() or "vacuous" in body.lower()
+        assert "not RPM" in body or "vacuous_or_truncated" in body
+        assert "Quality Score" not in body
 
     def test_post_review_edits_preferred_or_posts_new(self, monkeypatch):
         poster = CommentPoster("token")

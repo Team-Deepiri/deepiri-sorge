@@ -232,7 +232,7 @@ class EscalateLedger:
             r.raise_for_status()
             return bool(r.json().get("ok"))
         except requests.RequestException as e:
-            logger.warning(f"Ledger slot acquire failed ({provider}): {e}")
+            logger.warning(f"FAIL_OPEN ledger slot acquire ({provider}): {e}")
             # Fail open — don't block reviews if KV is down.
             return True
 
@@ -250,7 +250,7 @@ class EscalateLedger:
             r.raise_for_status()
             return bool(r.json().get("ok"))
         except requests.RequestException as e:
-            logger.warning(f"Ledger rpm consume failed ({provider}): {e}")
+            logger.warning(f"FAIL_OPEN ledger rpm consume ({provider}): {e}")
             # Fail open — don't block reviews if KV is down.
             return True
 
