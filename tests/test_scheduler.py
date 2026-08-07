@@ -179,7 +179,7 @@ def test_scheduler_does_not_stampede_dead_provider():
         def advertise(self, run):
             return run.status(self.name)
 
-        def review(self, chunk, run):
+        def review(self, chunk, run, *, prior_partial=None):
             calls["groq"] += 1
             return ProviderResult(
                 ok=False,
@@ -199,7 +199,7 @@ def test_scheduler_does_not_stampede_dead_provider():
         def advertise(self, run):
             return run.status(self.name)
 
-        def review(self, chunk, run):
+        def review(self, chunk, run, *, prior_partial=None):
             calls["gemini"] += 1
             return ProviderResult(
                 ok=True,
@@ -266,7 +266,7 @@ def test_scheduler_cache_hit_skips_acquire(tmp_path, monkeypatch):
         def advertise(self, run):
             return run.status(self.name)
 
-        def review(self, chunk, run):
+        def review(self, chunk, run, *, prior_partial=None):
             calls["gemini"] += 1
             return ProviderResult(ok=True, provider="gemini", status_code=200, result=_ok_result())
 
@@ -326,7 +326,7 @@ def test_scheduler_priority_under_deadline():
         def advertise(self, run):
             return run.status(self.name)
 
-        def review(self, chunk, run):
+        def review(self, chunk, run, *, prior_partial=None):
             reviewed.append(chunk.files[0])
             time.sleep(0.15)
             return ProviderResult(
@@ -435,7 +435,7 @@ def test_capacity_wait_budget_defers_without_burning_wall_clock():
         def advertise(self, run):
             return run.status(self.name)
 
-        def review(self, chunk, run):
+        def review(self, chunk, run, *, prior_partial=None):
             raise AssertionError("should not dispatch while cooling")
 
     history = ProviderHistory(sync_remote=False)
@@ -478,6 +478,307 @@ def test_capacity_wait_budget_defers_without_burning_wall_clock():
     assert meta.stop_reason == "providers_exhausted"
     assert any("capacity_waited" in s.reason or "no eligible" in s.reason for s in skipped)
 
+def test_capacity_wait_budget_scales_up_for_large_queues():
+    """A fixed 120s budget shouldn't nuke every chunk in a 100+ file PR after
+    a couple of early rate-limit cooldowns — the budget should scale with how
+    much work is actually queued, bounded by wall-clock time remaining."""
+    from bot.scheduling.run_context import RunContext
+
+    quota = QuotaTracker(limits={}, used={}, sync_remote=False)
+    run = RunContext(
+        providers={},
+        quota=quota,
+        deadline=time.monotonic() + 600,
+        max_capacity_wait_sec=120.0,
+    )
+    sch = ReviewScheduler([], run, max_workers=1)
+
+    # A small PR keeps the default budget.
+    sch._scale_capacity_wait(3)
+    assert run.max_capacity_wait_sec == 120.0
+
+    # A huge PR (many chunks) gets a much larger patience budget instead of
+    # abandoning most of the queue after the first ~2 minutes of cooldowns.
+    sch._scale_capacity_wait(118)
+    assert run.max_capacity_wait_sec > 120.0
+    # ...but never past wall-clock remaining minus the posting margin.
+    assert run.max_capacity_wait_sec <= run.remaining_sec()
+
+
+def test_capacity_wait_budget_never_exceeds_wall_clock():
+    """Even a massive queue can't push the budget past the run's own deadline."""
+    from bot.scheduling.run_context import RunContext
+
+    quota = QuotaTracker(limits={}, used={}, sync_remote=False)
+    run = RunContext(
+        providers={},
+        quota=quota,
+        deadline=time.monotonic() + 60,
+        max_capacity_wait_sec=120.0,
+    )
+    sch = ReviewScheduler([], run, max_workers=1)
+    sch._scale_capacity_wait(500)
+    assert run.max_capacity_wait_sec <= run.remaining_sec()
+
+
+def test_large_pr_survives_early_rate_limits_end_to_end(monkeypatch):
+    """Reproduces the real incident: a 118-chunk PR, 3 early 429s that used
+    to burn the whole 120s capacity-wait budget and skip everything else.
+    Runs the actual scheduler loop (not just the budget helper) on a fake
+    clock so cooldowns "pass" without real sleeping, and proves that once
+    the provider recovers, the scaled budget lets the rest of the queue get
+    reviewed instead of being abandoned in one shot."""
+    from bot.scheduling.run_context import ProviderRuntime, RunContext
+
+    clock = {"t": 0.0}
+
+    def fake_monotonic():
+        return clock["t"]
+
+    def fake_sleep(seconds):
+        clock["t"] += seconds
+
+    monkeypatch.setattr(time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(time, "sleep", fake_sleep)
+
+    class FlakyThenRecovers:
+        name = "groq"
+        max_context_tokens = 100000
+        cost_tier = "free"
+        nominal_latency_ms = 200
+        quality_prior = 0.9
+
+        def __init__(self):
+            self.calls = 0
+
+        def advertise(self, run):
+            return run.status(self.name)
+
+        def review(self, chunk, run, *, prior_partial=None):
+            self.calls += 1
+            if self.calls <= 3:
+                return ProviderResult(
+                    ok=False,
+                    provider="groq",
+                    status_code=429,
+                    retry_after=45.0,
+                    latency_ms=50.0,
+                    error="http_429",
+                )
+            return ProviderResult(
+                ok=True,
+                provider="groq",
+                status_code=200,
+                latency_ms=50.0,
+                result=ReviewResult(
+                    summary="ok",
+                    issues=[],
+                    recommendations=[],
+                    score=8.0,
+                    latency_ms=50.0,
+                    model="groq",
+                ),
+            )
+
+    quota = QuotaTracker(limits={"gpt": 10000}, used={"gpt": 0}, sync_remote=False)
+    run = RunContext(
+        providers={
+            "groq": ProviderRuntime(
+                name="groq",
+                bucket=TokenBucket(3000, capacity=3000),
+                health=HealthTracker(100),
+                max_context_tokens=100000,
+                max_inflight=2,
+                nominal_latency_ms=200,
+                quality_prior=0.9,
+            ),
+        },
+        quota=quota,
+        deadline=fake_monotonic() + 720.0,
+        max_capacity_wait_sec=120.0,
+        # This fixture registers no Gemini provider, so gemini_fully_dead() is
+        # always True and the free-tier chunk cap would trim the queue to 8.
+        # That guard is exercised by test_gemini_dead_caps_free_tier_chunks;
+        # here we're measuring the capacity-wait budget, so opt out of it.
+        gemini_dead_max_chunks=118,
+    )
+    provider = FlakyThenRecovers()
+    sch = ReviewScheduler([provider], run, max_workers=1)
+    chunks = [
+        ReviewChunk(
+            files=[f"file_{i}.ts"],
+            parsed_diff=ParsedDiff(raw="+x\n"),
+            estimated_tokens=100,
+        )
+        for i in range(118)
+    ]
+    results, skipped, meta = sch.run(chunks)
+
+    # Old fixed 120s budget would've been exhausted by the 3 early 429
+    # cooldowns (~2 min) and skipped ~112 of these in one shot. The scaled
+    # budget should let almost the entire queue get reviewed once the
+    # provider recovers.
+    assert len(results) > 100
+    assert len(skipped) < 18
+
+
+def test_scheduler_forwards_partial_output_to_fallback_provider():
+    """A truncated Groq response primes the next provider instead of being dropped."""
+    seen = {"gemini_prior": "unset"}
+    partial = (
+        '{"summary": "Reviewed mmap.cpp", "issues": [{"severity": "high", '
+        '"file": "src/mmap.cpp", "line": 42, "message": "munmap called on a '
+        'region that was already reset, so the second call double-unmaps"'
+    )
+
+    class FakeGroq:
+        name = "groq"
+        max_context_tokens = 100000
+        cost_tier = "free"
+        nominal_latency_ms = 200
+        quality_prior = 0.9
+
+        def advertise(self, run):
+            return run.status(self.name)
+
+        def review(self, chunk, run, *, prior_partial=None):
+            # HTTP 200 but cut off mid-generation (finish_reason=length).
+            return ProviderResult(
+                ok=False,
+                provider="groq",
+                status_code=200,
+                error="empty_or_invalid_review",
+                partial_output=partial,
+            )
+
+    class FakeGemini:
+        name = "gemini"
+        max_context_tokens = 100000
+        cost_tier = "free"
+        nominal_latency_ms = 800
+        quality_prior = 0.8
+
+        def advertise(self, run):
+            return run.status(self.name)
+
+        def review(self, chunk, run, *, prior_partial=None):
+            seen["gemini_prior"] = prior_partial
+            return ProviderResult(
+                ok=True,
+                provider="gemini",
+                status_code=200,
+                result=_ok_result(),
+            )
+
+    from bot.scheduling.run_context import ProviderRuntime, RunContext
+
+    quota = QuotaTracker(
+        limits={"gpt": 100, "gemini": 100, "openrouter": 100},
+        used={"gpt": 0, "gemini": 0, "openrouter": 0},
+    )
+    run = RunContext(
+        providers={
+            "groq": ProviderRuntime(
+                name="groq",
+                bucket=TokenBucket(30),
+                health=HealthTracker(100),
+                max_context_tokens=100000,
+                max_inflight=1,
+                nominal_latency_ms=200,
+                quality_prior=0.9,
+            ),
+            "gemini": ProviderRuntime(
+                name="gemini",
+                bucket=TokenBucket(30),
+                health=HealthTracker(100),
+                max_context_tokens=100000,
+                max_inflight=1,
+                nominal_latency_ms=800,
+                quality_prior=0.8,
+            ),
+        },
+        quota=quota,
+        deadline=time.monotonic() + 30,
+    )
+    scheduler = ReviewScheduler([FakeGroq(), FakeGemini()], run, max_workers=1)
+    chunk = ReviewChunk(
+        files=["src/mmap.cpp"],
+        parsed_diff=ParsedDiff(raw="+void reset();\n"),
+        estimated_tokens=100,
+    )
+    results, _skipped, _meta = scheduler.run([chunk])
+
+    assert len(results) == 1
+    assert seen["gemini_prior"] == partial, "fallback should resume from Groq's partial"
+
+
+def test_scheduler_does_not_prime_when_no_partial_salvaged():
+    seen = {"gemini_prior": "unset"}
+
+    class FakeGroq:
+        name = "groq"
+        max_context_tokens = 100000
+        cost_tier = "free"
+        nominal_latency_ms = 200
+        quality_prior = 0.9
+
+        def advertise(self, run):
+            return run.status(self.name)
+
+        def review(self, chunk, run, *, prior_partial=None):
+            return ProviderResult(
+                ok=False, provider="groq", status_code=429, retry_after=60,
+                error="rate limited",
+            )
+
+    class FakeGemini:
+        name = "gemini"
+        max_context_tokens = 100000
+        cost_tier = "free"
+        nominal_latency_ms = 800
+        quality_prior = 0.8
+
+        def advertise(self, run):
+            return run.status(self.name)
+
+        def review(self, chunk, run, *, prior_partial=None):
+            seen["gemini_prior"] = prior_partial
+            return ProviderResult(
+                ok=True, provider="gemini", status_code=200, result=_ok_result(),
+            )
+
+    from bot.scheduling.run_context import ProviderRuntime, RunContext
+
+    quota = QuotaTracker(
+        limits={"gpt": 100, "gemini": 100, "openrouter": 100},
+        used={"gpt": 0, "gemini": 0, "openrouter": 0},
+    )
+    run = RunContext(
+        providers={
+            "groq": ProviderRuntime(
+                name="groq", bucket=TokenBucket(30), health=HealthTracker(100),
+                max_context_tokens=100000, max_inflight=1,
+                nominal_latency_ms=200, quality_prior=0.9,
+            ),
+            "gemini": ProviderRuntime(
+                name="gemini", bucket=TokenBucket(30), health=HealthTracker(100),
+                max_context_tokens=100000, max_inflight=1,
+                nominal_latency_ms=800, quality_prior=0.8,
+            ),
+        },
+        quota=quota,
+        deadline=time.monotonic() + 30,
+    )
+    scheduler = ReviewScheduler([FakeGroq(), FakeGemini()], run, max_workers=1)
+    chunk = ReviewChunk(
+        files=["a.py"],
+        parsed_diff=ParsedDiff(raw="+print(1)\n"),
+        estimated_tokens=100,
+    )
+    scheduler.run([chunk])
+
+    assert seen["gemini_prior"] is None
+
 
 def test_quality_unusable_is_not_capacity_failure():
     vacuous = ProviderResult(
@@ -515,7 +816,7 @@ def test_gemini_dead_caps_free_tier_chunks():
                 quality_prior=0.9,
             )
 
-        def review(self, chunk, run):
+        def review(self, chunk, run, *, prior_partial=None):
             return ProviderResult(
                 ok=True,
                 provider="groq",
@@ -548,7 +849,7 @@ def test_gemini_dead_caps_free_tier_chunks():
                 quality_prior=0.85,
             )
 
-        def review(self, chunk, run):
+        def review(self, chunk, run, *, prior_partial=None):
             raise AssertionError("gemini should not be called when soft RPD is 0")
 
     from bot.scheduling.history import ProviderHistory

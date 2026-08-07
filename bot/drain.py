@@ -77,14 +77,6 @@ def run_drain(
         if result is None:
             fail_ids.append(ticket.ticket_id)
             continue
-        note = (
-            f"_Upgraded review (Gemini multiplex drain; prior Groq triage "
-            f"score={ticket.groq_score}, reason={ticket.reason})._"
-        )
-        recs = list(result.recommendations or [])
-        if note not in recs:
-            recs.insert(0, note)
-        result.recommendations = recs
 
         if dry_run:
             logger.info(
@@ -96,18 +88,20 @@ def run_drain(
             continue
 
         token = _token_for_ticket(ticket, fallback_token)
-        if not token or not ticket.repo or not ticket.pr_number:
+        if not token or not ticket.repo or not ticket.pr_number or not ticket.comment_id:
             logger.warning(f"Cannot post upgrade for ticket {ticket.ticket_id}")
             fail_ids.append(ticket.ticket_id)
             continue
-        ok = CommentPoster(token).post_review(
+        # Append to the existing review comment rather than overwriting it —
+        # this ticket is only one deferred chunk out of a possibly much
+        # larger multi-chunk review already posted on that comment.
+        ok = CommentPoster(token).append_escalation(
             ticket.repo,
-            ticket.pr_number,
+            ticket.comment_id,
+            ticket,
             result,
-            edit_existing=True,
-            preferred_comment_id=ticket.comment_id,
         )
-        if ok is not None:
+        if ok:
             done_ids.append(ticket.ticket_id)
             posted += 1
         else:

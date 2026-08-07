@@ -105,6 +105,94 @@ def test_non_json_response_is_not_quality_zero():
     assert merged.routing_meta.get("final_state") == "NO_PROVIDER_AVAILABLE"
 
 
+def _chunk(path="big.bin", reason=None) -> ReviewChunk:
+    return ReviewChunk(
+        files=[path],
+        parsed_diff=ParsedDiff(raw="+x\n"),
+        estimated_tokens=10,
+        unreviewable_reason=reason,
+    )
+
+
+def test_deadline_skip_never_yields_a_scored_review():
+    """deepiri-crankl#28: 'deadline' wasn't in the capacity reason list, so a
+    run where zero chunks succeeded produced review_type='aggregated' and the
+    adjudicator rescored the empty issue list to a perfect 10.0."""
+    skipped = [
+        SkipRecord(_chunk("src/mmap.cpp"), "wall-clock deadline (priority=50 not reached)")
+    ]
+    merged = ReviewAggregator.merge(
+        [], rung="scheduled", skipped=skipped, scheduler_meta={"stop_reason": "deadline"}
+    )
+
+    assert merged.review_type == "rate_limited"
+    assert merged.score == 0.0
+    assert "not a code-quality score" in merged.summary
+
+
+def test_unknown_skip_reason_still_yields_no_score():
+    """The gate is 'did any chunk succeed', not 'does the reason string match'."""
+    skipped = [SkipRecord(_chunk("a.py"), "something nobody has seen before")]
+    merged = ReviewAggregator.merge([], rung="scheduled", skipped=skipped)
+
+    from bot.schemas import is_no_score
+
+    assert is_no_score(merged.review_type)
+    assert merged.score == 0.0
+
+
+def test_unreviewable_files_yield_no_result_not_a_score():
+    unreviewable = [_chunk("generated.pb.go", reason="File too large for automated review")]
+    merged = ReviewAggregator.merge([], rung="scheduled", unreviewable=unreviewable)
+
+    assert merged.review_type == "no_result"
+    assert merged.score == 0.0
+    # Distinct from rate_limited: retrying will not make the file smaller.
+    assert merged.routing_meta["final_state"] == "NO_CHUNK_REVIEWED"
+
+
+def test_adjudicator_does_not_rescore_a_run_that_reviewed_nothing():
+    """The other half of #28: the adjudicator dropped the lone skip-record and
+    then recomputed a score from the resulting empty list, yielding 10.0."""
+    from bot.finding_adjudicator import FindingAdjudicator
+
+    unreviewable = [_chunk("generated.pb.go", reason="File too large")]
+    merged = ReviewAggregator.merge([], rung="scheduled", unreviewable=unreviewable)
+    assert merged.issues, "aggregator should emit a placeholder issue"
+    assert merged.score == 0.0
+
+    adjudicator = FindingAdjudicator.__new__(FindingAdjudicator)
+    # Adjudicator drops the placeholder as not-a-real-finding, emptying the list.
+    adjudicator._complete = lambda prompt: {
+        "decisions": [{"index": 0, "action": "drop", "reason": "scheduler artifact"}]
+    }
+
+    out = adjudicator.adjudicate_result(merged, deploy_facts={})
+
+    assert out.issues == []
+    assert out.score == 0.0, "an empty kept list must not score 10.0"
+    assert out.review_type == "no_result"
+
+
+def test_adjudicator_still_rescores_a_real_review():
+    from bot.finding_adjudicator import FindingAdjudicator
+
+    real = _result(4.0, "groq")
+    real.issues = [
+        ReviewIssue(severity="critical", file="a.py", message="null deref"),
+        ReviewIssue(severity="low", file="a.py", message="nit"),
+    ]
+    adjudicator = FindingAdjudicator.__new__(FindingAdjudicator)
+    adjudicator._complete = lambda prompt: {
+        "decisions": [{"index": 1, "action": "drop", "reason": "style nit"}]
+    }
+
+    out = adjudicator.adjudicate_result(real, deploy_facts={})
+
+    assert len(out.issues) == 1
+    # 10.0 - 2.5 for the remaining critical.
+    assert out.score == 7.5
+
 def test_gemini_soft_quota_deferral_class():
     chunk = ReviewChunk(
         files=["src/a.py"],

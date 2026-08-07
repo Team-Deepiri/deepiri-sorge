@@ -58,6 +58,15 @@ SOURCE_EXTENSIONS = frozenset({
     ".java",
     ".rb",
     ".php",
+    # C / C++ — headers included so the index can surface real header paths.
+    ".c",
+    ".cc",
+    ".cpp",
+    ".cxx",
+    ".h",
+    ".hpp",
+    ".hh",
+    ".hxx",
 })
 
 IMPORT_RE = re.compile(
@@ -65,9 +74,16 @@ IMPORT_RE = re.compile(
 )
 DEF_RE = re.compile(r"^\+\s*(?:async\s+)?def\s+(\w+)")
 CLASS_RE = re.compile(r"^\+\s*class\s+(\w+)")
+# C/C++: header name from an added #include, and class/struct/namespace decls.
+INCLUDE_RE = re.compile(r"^\+\s*#\s*include\s*[<\"]([^>\"]+)[>\"]")
+CPP_TYPE_RE = re.compile(r"^\+\s*(?:class|struct|namespace|enum(?:\s+class)?)\s+(\w+)")
 TOKEN_RE = re.compile(r"[a-zA-Z_][\w]{2,}")
 SYMBOL_LINE_RE = re.compile(
-    r"^(?:async\s+)?def\s+\w+|^class\s+\w+|^(?:export\s+)?(?:async\s+)?function\s+\w+"
+    r"^(?:async\s+)?def\s+\w+"
+    r"|^class\s+\w+"
+    r"|^(?:export\s+)?(?:async\s+)?function\s+\w+"
+    r"|^(?:template\s*<[^>]*>\s*)?(?:class|struct|namespace|enum(?:\s+class)?)\s+\w+"
+    r"|^[\w:<>,\s\*&]+\s[\w:~]+\s*\([^;]*\)\s*(?:const\s*)?(?:noexcept\s*)?\{"
 )
 
 STOPWORDS = frozenset({
@@ -77,6 +93,14 @@ STOPWORDS = frozenset({
     "try", "except", "finally", "for", "while", "in", "is", "as", "if",
     "print", "type", "str", "int", "list", "dict", "set", "tuple", "len",
     "open", "path", "file", "data", "value", "item", "name", "text", "line",
+    # C/C++ keywords and ubiquitous std names — high frequency, zero signal.
+    "const", "constexpr", "static", "inline", "extern", "struct", "union",
+    "namespace", "template", "typename", "public", "private", "protected",
+    "virtual", "override", "noexcept", "nullptr", "sizeof", "typedef",
+    "unsigned", "signed", "size_t", "ssize_t", "uint8_t", "uint32_t",
+    "uint64_t", "int32_t", "int64_t", "std", "string", "vector", "include",
+    "define", "endif", "ifndef", "pragma", "delete", "new", "this", "auto",
+    "using", "void", "bool", "char", "float", "double", "long", "short",
 })
 
 
@@ -179,7 +203,15 @@ class RepoContextWeaver:
             if not line.startswith("+") or line.startswith("+++"):
                 continue
 
-            for pattern in (IMPORT_RE, DEF_RE, CLASS_RE):
+            # #include <sys/mman.h> → anchor on "mman", not the ".h" suffix.
+            include_match = INCLUDE_RE.match(line)
+            if include_match:
+                header = include_match.group(1)
+                stem = Path(header).stem
+                if stem.lower() not in STOPWORDS:
+                    anchors.add(stem.lower())
+
+            for pattern in (IMPORT_RE, DEF_RE, CLASS_RE, CPP_TYPE_RE):
                 match = pattern.match(line)
                 if match:
                     for group in match.groups():

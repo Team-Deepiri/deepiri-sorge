@@ -135,7 +135,16 @@ class GroqRunner(BaseRunner):
             )
         raw = diff.raw if diff_raw is None else diff_raw
 
+        # Cache-prefix first: template + repo context are identical across every
+        # chunk of a PR, so they serve from Groq's automatic prefix cache — and
+        # cached tokens do not count against the tokens-per-minute limit that
+        # actually constrains us. See BaseRunner._build_prompt.
         return f"""{template}
+
+---
+
+## REPOSITORY CONTEXT
+{context_block}
 
 ---
 
@@ -146,12 +155,7 @@ Total lines: +{diff.lines_added} -{diff.lines_deleted}
 ```diff
 {raw}
 ```
-
----
-
-## REPOSITORY CONTEXT
-{context_block}
-"""
+{self._partial_block(self._prior_partial)}"""
 
     def _system_message(self) -> dict[str, str]:
         return {

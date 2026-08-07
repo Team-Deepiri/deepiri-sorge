@@ -7,6 +7,28 @@ from dataclasses import dataclass
 from bot.utils.response_parser import normalize_review_payload
 
 
+# Review types meaning "zero chunks were successfully reviewed". A quality
+# score is never defensible for these: there is no evidence behind it, and an
+# empty issue list would otherwise compute to a perfect 10.0.
+NO_SCORE_REVIEW_TYPES = frozenset(
+    {
+        "rate_limited",
+        "no_result",
+        # Deferral classes from _classify_deferral — all mean "no chunk was
+        # actually reviewed", so there is no score to report.
+        "soft_quota_exhausted",
+        "http_429",
+        "vacuous_or_truncated",
+        "mixed_capacity",
+        "providers_exhausted",
+    }
+)
+
+
+def is_no_score(review_type: str | None) -> bool:
+    return (review_type or "") in NO_SCORE_REVIEW_TYPES
+
+
 @dataclass
 class ReviewIssue:
     severity: str

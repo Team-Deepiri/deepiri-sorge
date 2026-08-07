@@ -21,6 +21,9 @@ class ProviderResult:
     result: ReviewResult | None = None
     error: str | None = None
     timed_out: bool = False
+    # Usable prefix of a response that was cut off mid-generation, so the next
+    # provider can resume instead of restarting from nothing.
+    partial_output: str | None = None
 
     @property
     def is_rate_limited(self) -> bool:
@@ -93,9 +96,15 @@ class ScheduledChunk:
     rate_limit_rounds: int = 0
     complexity: float = 0.0
     escalated: bool = False
+    # Partial output salvaged from a provider that was cut off on this chunk.
+    partial_review: str | None = None
+    partial_provider: str | None = None
 
 
 MAX_RATE_LIMIT_ROUNDS = 3
+# Cap on forwarded partial output. Groq's free tier allows 8k tokens/minute,
+# so priming must stay cheap enough not to shrink the diff we can send.
+MAX_PARTIAL_CHARS = 2_000
 ESCALATE_SCORE_THRESHOLD = 7.0
 
 

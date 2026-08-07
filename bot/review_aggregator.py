@@ -8,32 +8,6 @@ from bot.file_splitter import ReviewChunk
 from bot.scheduling.types import SchedulerMeta, SkipRecord
 
 
-def _is_capacity_skip(reason: str) -> bool:
-    """True when the skip means providers were unavailable — not a code verdict."""
-    r = (reason or "").lower()
-    return any(
-        token in r
-        for token in (
-            "http_429",
-            "429",
-            "rate limit",
-            "rate_limited",
-            "rate limited",
-            "no eligible provider",
-            "providers_exhausted",
-            "capacity",
-            "empty_response",
-            "empty_or_invalid",
-            "non_json",
-            "truncated",
-            "timeout",
-            "retry_in_approx",
-            "no_provider",
-            "deferred_gemini_quota_exhausted",
-        )
-    )
-
-
 def _classify_deferral(
     *,
     skipped: list[SkipRecord],
@@ -265,23 +239,15 @@ class ReviewAggregator:
             for skip in skipped or []:
                 issues.append(_skip_issue(skip))
 
-            # Capacity / rate-limit exhaustion → never invent a quality score.
-            capacity_only = (
-                bool(skipped)
-                and not (unreviewable or [])
-                and all(_is_capacity_skip(s.reason) for s in skipped)
-            )
-            if capacity_only or (
-                not issues
-                and scheduler_meta is not None
-                and (
-                    getattr(scheduler_meta, "stop_reason", None) == "providers_exhausted"
-                    or (
-                        isinstance(scheduler_meta, dict)
-                        and scheduler_meta.get("stop_reason") == "providers_exhausted"
-                    )
-                )
-            ):
+            # Zero chunks succeeded. No quality score is defensible here no
+            # matter *why* — previously this branch enumerated known failure
+            # reasons, and any reason outside that list ("deadline") fell
+            # through to a review_type the adjudicator would happily rescore
+            # from an empty issue list, i.e. a fabricated 10.0/10.
+            #
+            # The only remaining question is whether a retry could help:
+            # provider capacity recovers, an oversized file does not.
+            if not (unreviewable or []):
                 return _no_provider_result(
                     rung=rung,
                     quota_snapshot=quota_snapshot,
@@ -290,46 +256,35 @@ class ReviewAggregator:
                     scheduler_meta=scheduler_meta,
                 )
 
-            if issues:
-                return ReviewResult(
-                    summary="Partial review — some files could not be processed.",
-                    issues=issues,
-                    recommendations=["Reduce PR size or split large generated files"],
-                    score=0.0,
-                    latency_ms=0.0,
-                    model="none",
-                    review_type="aggregated",
-                    routing_meta={
-                        "rung": rung,
-                        "chunks": 0,
-                        "quota": quota_snapshot,
-                        "unreviewable": len(unreviewable or []),
-                        "skipped": len(skipped or []),
-                        **(
-                            {
-                                "scheduler": (
-                                    scheduler_meta.to_dict()
-                                    if hasattr(scheduler_meta, "to_dict")
-                                    else scheduler_meta
-                                )
-                            }
-                            if scheduler_meta
-                            else {}
-                        ),
-                    },
-                )
             return ReviewResult(
-                summary="No review results produced.",
-                issues=[],
-                recommendations=["Re-run the review or reduce PR size."],
+                summary=(
+                    "No automated review was generated — some files could not be "
+                    "processed. This is not a code-quality score."
+                ),
+                issues=issues,
+                recommendations=["Reduce PR size or split large generated files"],
                 score=0.0,
                 latency_ms=0.0,
                 model="none",
-                review_type="aggregated",
+                review_type="no_result",
                 routing_meta={
                     "rung": rung,
                     "chunks": 0,
                     "quota": quota_snapshot,
+                    "unreviewable": len(unreviewable or []),
+                    "skipped": len(skipped or []),
+                    "final_state": "NO_CHUNK_REVIEWED",
+                    **(
+                        {
+                            "scheduler": (
+                                scheduler_meta.to_dict()
+                                if hasattr(scheduler_meta, "to_dict")
+                                else scheduler_meta
+                            )
+                        }
+                        if scheduler_meta
+                        else {}
+                    ),
                 },
             )
 

@@ -129,6 +129,21 @@ class ReviewScheduler:
         )
         return cls(providers, ctx, max_workers=config.scheduler.max_workers)
 
+    def _scale_capacity_wait(self, queue_len: int) -> None:
+        """Scale the capacity-wait budget with queue size.
+
+        The budget exists to avoid parking the Actions job for 10+ minutes on
+        a single stuck chunk — it was never meant to be a run-wide cap. A
+        handful of early rate-limit cooldowns can exhaust a fixed 120s budget
+        in the first couple of minutes, after which every remaining chunk
+        gets abandoned in one shot regardless of how large the PR is or how
+        much wall-clock time is left. Large PRs legitimately need to ride out
+        more cooldowns, so scale up — but never past the wall-clock deadline
+        minus a margin to actually post results.
+        """
+        scaled = max(self.ctx.max_capacity_wait_sec, 8.0 * queue_len)
+        self.ctx.max_capacity_wait_sec = max(20.0, min(scaled, self.ctx.remaining_sec() - 30.0))
+
     def run(self, chunks: list[ReviewChunk]) -> tuple[list[ReviewResult], list[SkipRecord], SchedulerMeta]:
         overhead = self.ctx.prompt_overhead_tokens
         queue = [
@@ -143,6 +158,9 @@ class ReviewScheduler:
         queue.sort(key=sort_key)
         if queue:
             self.meta.avg_complexity = sum(s.complexity for s in queue) / len(queue)
+
+        if queue:
+            self._scale_capacity_wait(len(queue))
 
         results: list[ReviewResult] = []
         skipped: list[SkipRecord] = []
@@ -337,6 +355,17 @@ class ReviewScheduler:
                             ok=False,
                             latency_ms=outcome.latency_ms,
                         )
+                        # Keep the first salvaged fragment: it came from the
+                        # highest-ranked provider that got far enough to
+                        # produce one, so it's the best primer available.
+                        if outcome.partial_output and not scheduled.partial_review:
+                            scheduled.partial_review = outcome.partial_output
+                            scheduled.partial_provider = name
+                            logger.info(
+                                f"Salvaged {len(outcome.partial_output)} chars of "
+                                f"partial review from {name}; next provider will "
+                                f"resume instead of restarting"
+                            )
                         logger.info(
                             f"Provider attempt failed provider={name} "
                             f"status={outcome.status_code} "
@@ -878,12 +907,22 @@ class ReviewScheduler:
     def _dispatch(self, scheduled: ScheduledChunk, name: str) -> ProviderResult:
         provider = self.providers[name]
         eff = effective_tokens(scheduled, self.ctx.prompt_overhead_tokens)
+        primed = ""
+        if scheduled.partial_review:
+            primed = (
+                f", primed={len(scheduled.partial_review)}ch "
+                f"from {scheduled.partial_provider}"
+            )
         logger.info(
             f"Scheduler → {name} for chunk "
             f"(priority={scheduled.priority}, complexity={scheduled.complexity:.2f}, "
-            f"tokens={scheduled.chunk.estimated_tokens}, effective={eff})"
+            f"tokens={scheduled.chunk.estimated_tokens}, effective={eff}{primed})"
         )
-        return provider.review(scheduled.chunk, self.ctx)
+        return provider.review(
+            scheduled.chunk,
+            self.ctx,
+            prior_partial=scheduled.partial_review,
+        )
 
     def _record_success(self, name: str, latency_ms: float) -> None:
         rt = self.ctx.providers[name]
