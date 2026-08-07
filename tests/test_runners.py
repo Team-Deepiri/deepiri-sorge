@@ -397,6 +397,30 @@ class TestGroqRunner:
         assert result.parse_warning is None
         assert result.review_type == "groq"
 
+    def test_inflated_scheduler_estimate_does_not_starve_max_tokens(self, sample_diff):
+        """Production failure: est=6456 → max_tokens≈1312 → truncated_vacuous_review."""
+        runner = GroqRunner(api_key="fake-groq-key")
+        runner._effective_input_tokens = 6456
+        captured: list[int] = []
+
+        def _capture_post(*args, **kwargs):
+            captured.append((kwargs.get("json") or {})["max_tokens"])
+            return _mock_response(OPENAI_COMPAT_CHAT_COMPLETIONS_RESPONSE)
+
+        with patch("bot.runners.groq_runner.post_with_retry", side_effect=_capture_post):
+            result = runner._run_review(sample_diff)
+
+        assert captured
+        assert captured[0] >= GroqRunner.MIN_OUTPUT_TOKENS
+        assert result is not None
+
+    def test_fit_messages_shrinks_until_min_output_headroom(self, sample_diff):
+        runner = GroqRunner(api_key="fake-groq-key")
+        runner._repo_context = "x" * 20_000
+        sample_diff.raw = ("+" + ("y" * 200) + "\n") * 80
+        messages = runner._fit_messages_for_output(sample_diff)
+        assert runner._headroom_for(messages) >= GroqRunner.MIN_OUTPUT_TOKENS
+
 
 # ---------------------------------------------------------------------------
 # SchemaEncoder

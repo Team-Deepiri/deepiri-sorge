@@ -100,6 +100,9 @@ class ReviewScheduler:
         max_cap_wait = float(
             getattr(config.scheduler, "max_capacity_wait_sec", 120.0) or 120.0
         )
+        gemini_dead_max = int(
+            getattr(config.scheduler, "gemini_dead_max_chunks", 8) or 8
+        )
         ctx = RunContext(
             providers=runtimes,
             quota=quota,
@@ -117,6 +120,7 @@ class ReviewScheduler:
             head_sha=head_sha or "",
             max_capacity_wait_sec=max_cap_wait,
             semaphore=ProviderSemaphore(),
+            gemini_dead_max_chunks=max(1, gemini_dead_max),
         )
         logger.info(
             f"Provider history loaded ({len(getattr(history, '_stats', {}))} keys); "
@@ -161,6 +165,38 @@ class ReviewScheduler:
         results: list[ReviewResult] = []
         skipped: list[SkipRecord] = []
         pending_escalates: list[tuple[ScheduledChunk, ReviewResult, str]] = []
+
+        # Free-tier survival: when Gemini soft RPD is gone, only burn Groq/OR on
+        # the highest-priority chunks instead of stampeding the whole PR.
+        from bot.context_shaver import gemini_fully_dead
+
+        if (
+            queue
+            and gemini_fully_dead(
+                self.ctx.quota,
+                list(self.providers.values()),
+                history=self.ctx.history if isinstance(self.ctx.history, ProviderHistory) else None,
+            )
+        ):
+            cap = max(1, int(self.ctx.gemini_dead_max_chunks))
+            if len(queue) > cap:
+                deferred = queue[cap:]
+                queue = queue[:cap]
+                for scheduled in deferred:
+                    skipped.append(
+                        SkipRecord(
+                            scheduled.chunk,
+                            (
+                                f"deferred_gemini_quota_exhausted:"
+                                f"prioritized_top_{cap}_of_{cap + len(deferred)}"
+                            ),
+                        )
+                    )
+                self.meta.skipped = len(skipped)
+                logger.info(
+                    f"Gemini soft quota exhausted — reviewing top {cap}/"
+                    f"{cap + len(deferred)} chunks on free-tier providers"
+                )
 
         while queue and self.ctx.alive():
             still_waiting: list[ScheduledChunk] = []
@@ -944,8 +980,12 @@ class ReviewScheduler:
             self.ctx.quota.record_failure(name)
             if isinstance(self.ctx.history, ProviderHistory):
                 self.ctx.history.mark_rate_limited(name, retry_after=outcome.retry_after)
+        elif outcome.is_quality_unusable:
+            # Truncated/empty JSON is a prompt/token budget problem, not RPM.
+            # Soft health hit only — do not cross-run cool or soft-burn RPD.
+            rt.health.record_payload_too_large()
         elif outcome.is_capacity_failure and not outcome.is_payload_too_large:
-            # Truncated/empty/5xx: soft-cool so concurrent jobs skip this provider briefly.
+            # True 5xx / timeout-style capacity: soft-cool briefly.
             cool = outcome.retry_after if outcome.retry_after is not None else 45.0
             rt.health.record_rate_limit(cool)
             if isinstance(self.ctx.history, ProviderHistory):
