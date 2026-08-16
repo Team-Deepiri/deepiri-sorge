@@ -43,8 +43,8 @@ class TestConfig:
         assert openrouter.models == [
             "google/gemma-4-31b-it:free",
             "openai/gpt-oss-20b:free",
-            "meta-llama/llama-3.3-70b-instruct:free",
-            "poolside/laguna-m.1:free",
+            "nvidia/nemotron-3-super-120b-a12b:free",
+            "google/gemma-4-26b-a4b-it:free",
         ]
         assert openrouter.endpoint == "https://openrouter.ai/api/v1/chat/completions"
         assert openrouter.api_key is None

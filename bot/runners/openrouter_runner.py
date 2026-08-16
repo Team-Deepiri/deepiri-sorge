@@ -15,6 +15,10 @@ from bot.runners.json_schema import SchemaEncoder
 from bot.schemas import ReviewIssue
 from bot.utils.http_retry import post_with_retry
 
+# Statuses that mean "try the next model" rather than "give up on OpenRouter":
+# 429 rate limited, 404 model id retired, 400 model rejected the request.
+FAILOVER_STATUSES = frozenset({429, 404, 400})
+
 
 class OpenRouterRunner(BaseRunner):
     """Runner for OpenRouter-hosted models."""
@@ -148,7 +152,12 @@ class OpenRouterRunner(BaseRunner):
     def _post_openrouter_with_model_failover(
         self, payload: dict, headers: dict
     ) -> requests.Response:
-        """Try free models in order on HTTP 429 without raising soft RPD burns mid-call."""
+        """Try free models in order without raising soft RPD burns mid-call.
+
+        Fails over on 429 (model is rate limited) and on 404/400 (the model id
+        was retired or rejected the request). A retired id used to abort the
+        whole chain, so working models later in the list were never tried.
+        """
         last_exc: requests.HTTPError | None = None
         for idx, model in enumerate(self.models):
             attempt = dict(payload)
@@ -160,12 +169,16 @@ class OpenRouterRunner(BaseRunner):
             except requests.HTTPError as exc:
                 status = getattr(exc.response, "status_code", None)
                 self._last_http_status = status
-                if status == 429 and idx + 1 < len(self.models):
+                if status in FAILOVER_STATUSES and idx + 1 < len(self.models):
+                    cause = (
+                        "429" if status == 429 else f"unavailable (HTTP {status})"
+                    )
                     logger.warning(
-                        f"OpenRouter 429 on {model}; failing over to {self.models[idx + 1]}"
+                        f"OpenRouter {cause} on {model}; "
+                        f"failing over to {self.models[idx + 1]}"
                     )
                     last_exc = exc
-                    if exc.response is not None:
+                    if status == 429 and exc.response is not None:
                         raw = exc.response.headers.get("Retry-After")
                         if raw:
                             try:
