@@ -899,3 +899,108 @@ def test_gemini_dead_caps_free_tier_chunks():
     assert len(results) == 2
     assert len(skipped) == 3
     assert all("deferred_gemini_quota_exhausted" in s.reason for s in skipped)
+
+
+class _FakeSemaphore:
+    """Cross-run KV semaphore stand-in: deny the first N slot acquisitions."""
+
+    def __init__(self, deny_first: int):
+        self.deny_first = deny_first
+        self.acquire_calls = 0
+
+    def try_acquire(self, provider, *, max_inflight=1, ttl_sec=180.0):
+        self.acquire_calls += 1
+        return self.acquire_calls > self.deny_first
+
+    def try_consume_rpm(self, provider, *, rpm):
+        return True
+
+    def release(self, provider):
+        return None
+
+    def release_all(self):
+        return None
+
+
+def _contention_scheduler(semaphore, *, capacity_wait=20.0):
+    from bot.scheduling.run_context import ProviderRuntime, RunContext
+
+    class FakeGemini:
+        name = "gemini"
+        max_context_tokens = 100000
+        cost_tier = "free"
+        nominal_latency_ms = 800
+        quality_prior = 0.8
+
+        def advertise(self, run):
+            return run.status(self.name)
+
+        def review(self, chunk, run, *, prior_partial=None):
+            return ProviderResult(
+                ok=True, provider="gemini", status_code=200, result=_ok_result()
+            )
+
+    run = RunContext(
+        providers={
+            "gemini": ProviderRuntime(
+                name="gemini",
+                bucket=TokenBucket(30),
+                health=HealthTracker(100),
+                max_context_tokens=100000,
+                max_inflight=1,
+                nominal_latency_ms=800,
+                quality_prior=0.8,
+            )
+        },
+        quota=QuotaTracker(limits={"gemini": 100}, used={"gemini": 0}),
+        deadline=time.monotonic() + 600,
+        max_capacity_wait_sec=capacity_wait,
+        semaphore=semaphore,
+    )
+    chunk = ReviewChunk(
+        files=["a.py"],
+        parsed_diff=ParsedDiff(raw="+print(1)\n"),
+        estimated_tokens=100,
+    )
+    return ReviewScheduler([FakeGemini()], run, max_workers=1), chunk
+
+
+def test_lost_slot_race_retries_instead_of_deferring(monkeypatch):
+    """Regression: losing the cross-run slot deferred the whole review instantly.
+
+    Nothing local is cooling when the semaphore denies a slot, so _min_wake_sec()
+    returned None and the scheduler declared providers_exhausted after using 0s
+    of its capacity budget — without ever calling a provider.
+    """
+    from bot.scheduling import scheduler as scheduler_mod
+
+    monkeypatch.setattr(scheduler_mod.time, "sleep", lambda _s: None)
+    sem = _FakeSemaphore(deny_first=2)
+    sch, chunk = _contention_scheduler(sem)
+
+    results, skipped, meta = sch.run([chunk])
+
+    assert len(results) == 1
+    assert not skipped
+    assert meta.dispatches == 1
+    assert meta.stop_reason is None
+    assert sem.acquire_calls == 3  # two denials ridden out, third won the slot
+
+
+def test_unresolved_contention_reports_lock_contention(monkeypatch):
+    """Budget spent entirely on contention is not 'providers exhausted'."""
+    from bot.scheduling import scheduler as scheduler_mod
+
+    monkeypatch.setattr(scheduler_mod.time, "sleep", lambda _s: None)
+    sem = _FakeSemaphore(deny_first=10_000)
+    sch, chunk = _contention_scheduler(sem)
+
+    results, skipped, meta = sch.run([chunk])
+
+    assert not results
+    assert meta.dispatches == 0
+    assert meta.stop_reason == "lock_contention"
+    assert len(skipped) == 1
+    assert "lock_contention" in skipped[0].reason
+    # It actually waited, rather than giving up on the first denial.
+    assert sch.ctx.capacity_waited_sec > 0

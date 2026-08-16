@@ -61,6 +61,13 @@ def _classify_deferral(
         for tok in ("empty_response", "truncated", "non_json", "truncated_vacuous")
     )
 
+    # Authoritative: the scheduler never reached a provider because a
+    # concurrent run held every slot. Not a capacity or quota problem.
+    if (sched or {}).get("stop_reason") == "lock_contention" or (
+        "lock_contention" in skip_text
+    ):
+        return "lock_contention"
+
     if soft_gemini and not http_429 and not vacuous:
         return "soft_quota_exhausted"
     if http_429 and not vacuous and not soft_gemini:
@@ -177,11 +184,23 @@ def _no_provider_result(
         ]
         review_type = "vacuous_or_truncated"
         status_hint = "vacuous_or_truncated"
+    elif deferral == "lock_contention":
+        summary = (
+            "Review deferred — another Sorge run held every provider slot for this "
+            "run's whole wait budget. No provider was called and no quota was spent; "
+            "this is not a rate limit and not a code-quality score."
+        )
+        recs = [
+            "This clears on its own — the retry below usually succeeds",
+            "If it repeats, several reviews are being triggered at once on the same PR",
+        ]
+        review_type = "lock_contention"
+        status_hint = "lock_contention"
     else:
         summary = (
-            "Review deferred — mixed provider issues (soft Gemini quota and/or HTTP 429 "
-            "and/or truncated responses). No automated review was generated — this is "
-            "not a code-quality score."
+            "Review deferred — no provider accepted the work before the wait budget "
+            "ran out. No automated review was generated — this is not a code-quality "
+            "score. See the routing details below for the per-provider outcome."
         )
         if retry_mins:
             summary += f" Approximate retry window: ~{retry_mins} minute(s)."
@@ -191,7 +210,7 @@ def _no_provider_result(
                 if retry_mins
                 else "Wait a few minutes, then comment `/sorge` again"
             ),
-            "Check routing details below for soft_quota vs http_429 vs vacuous/truncated",
+            "Check routing details below for the per-provider status and error",
         ]
         review_type = "rate_limited"
         status_hint = "mixed"
