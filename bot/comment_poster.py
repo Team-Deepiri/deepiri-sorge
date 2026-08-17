@@ -160,6 +160,9 @@ class CommentPoster:
             "providers_exhausted": (
                 "**Status:** Temporarily unavailable — providers exhausted"
             ),
+            "lock_contention": (
+                "**Status:** Deferred — another review run held the provider slots"
+            ),
         }.get(str(deferral), "**Status:** Temporarily unavailable — provider capacity")
 
         lines = [

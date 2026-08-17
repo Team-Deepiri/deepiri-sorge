@@ -445,7 +445,8 @@ def main() -> None:
         # One automatic delayed retry after capacity defer (not on the retry itself).
         if (
             review_result
-            and getattr(review_result, "review_type", "") == "rate_limited"
+            and getattr(review_result, "review_type", "")
+            in ("rate_limited", "lock_contention")
             and not getattr(args, "auto_retry", False)
         ):
             import random

@@ -41,6 +41,15 @@ permissions:
   pull-requests: write
   issues: write
 
+# One review at a time per PR. A burst of /sorge comments (or a push while a
+# review is running) used to spawn parallel runs that fought over the same
+# cross-run provider slots and deferred each other. Drain runs share one group.
+concurrency:
+  group: >-
+    sorge-${{ github.event.client_payload.repo || inputs.repo || 'drain' }}-${{
+    github.event.client_payload.pr_number || inputs.pr_number || 'drain' }}
+  cancel-in-progress: false
+
 env:
   PYTHON_VERSION: "3.11"
   POETRY_VERSION: "1.8.2"

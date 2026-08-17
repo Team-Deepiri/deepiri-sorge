@@ -142,3 +142,4 @@ secrets.json
 # Build artifacts
 node_modules/
 vendor/
+worker/.wrangler/

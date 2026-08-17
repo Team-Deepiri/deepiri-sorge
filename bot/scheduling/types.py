@@ -106,6 +106,12 @@ MAX_RATE_LIMIT_ROUNDS = 3
 # so priming must stay cheap enough not to shrink the diff we can send.
 MAX_PARTIAL_CHARS = 2_000
 ESCALATE_SCORE_THRESHOLD = 7.0
+# Losing the cross-run provider slot is not a provider failure: the holder
+# releases within seconds (or its 180s TTL lapses). Back off short and retry
+# inside the capacity budget rather than deferring the review.
+LOCK_CONTENTION_BACKOFF_SEC = 5.0
+# If the whole budget goes to contention, retry sooner than a rate-limit defer.
+LOCK_CONTENTION_RETRY_SEC = 45.0
 
 
 @dataclass
