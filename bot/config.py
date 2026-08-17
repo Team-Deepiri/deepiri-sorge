@@ -39,8 +39,8 @@ class OpenRouterConfig(BaseModel):
         default=[
             "google/gemma-4-31b-it:free",
             "openai/gpt-oss-20b:free",
-            "meta-llama/llama-3.3-70b-instruct:free",
-            "poolside/laguna-m.1:free",
+            "nvidia/nemotron-3-super-120b-a12b:free",
+            "google/gemma-4-26b-a4b-it:free",
         ],
         description="Ordered list of OpenRouter models to try in sequence (3 retries each)",
     )

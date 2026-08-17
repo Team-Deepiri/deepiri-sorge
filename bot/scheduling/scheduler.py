@@ -39,6 +39,8 @@ from bot.scheduling.escalate import (
 )
 from bot.scheduling.types import (
     ESCALATE_SCORE_THRESHOLD,
+    LOCK_CONTENTION_BACKOFF_SEC,
+    LOCK_CONTENTION_RETRY_SEC,
     MAX_RATE_LIMIT_ROUNDS,
     ProviderResult,
     SchedulerMeta,
@@ -217,6 +219,10 @@ class ReviewScheduler:
             desired = self._desired_workers()
             batch: list[tuple[ScheduledChunk, str]] = []
             still_waiting = []
+            # A provider was eligible but its slot was held by a concurrent run.
+            # That is contention, not exhaustion — it clears in seconds and has
+            # no local cooldown for _min_wake_sec() to find.
+            contended = False
 
             for scheduled in queue:
                 if not self.ctx.alive():
@@ -236,6 +242,7 @@ class ReviewScheduler:
                     still_waiting.append(scheduled)
                     continue
                 if not self.ctx.try_acquire(pick):
+                    contended = True
                     still_waiting.append(scheduled)
                     continue
                 scheduled._last_pick_score = pick_score  # type: ignore[attr-defined]
@@ -243,6 +250,11 @@ class ReviewScheduler:
 
             if not batch:
                 wait = self._min_wake_sec()
+                if wait is None and contended:
+                    # Nothing local is cooling — we simply lost the cross-run
+                    # slot race. Back off briefly and retry inside the existing
+                    # capacity budget instead of deferring the whole review.
+                    wait = LOCK_CONTENTION_BACKOFF_SEC
                 remaining = self.ctx.remaining_sec()
                 budget = self.ctx.capacity_budget_remaining()
                 if wait is not None and wait > remaining:
@@ -257,7 +269,23 @@ class ReviewScheduler:
                     cool_hint = 0.0
                     if isinstance(self.ctx.history, ProviderHistory):
                         cool_hint = self.ctx.history.max_cooling_remaining()
+                    # Only contention blocked us, and we ran out of budget
+                    # waiting it out — report that, not provider exhaustion.
+                    lock_only = contended and self.meta.dispatches == 0
                     for s in still_waiting:
+                        if lock_only:
+                            skipped.append(
+                                SkipRecord(
+                                    s.chunk,
+                                    (
+                                        f"lock_contention (priority={s.priority}; "
+                                        f"provider slot held by a concurrent run; "
+                                        f"capacity_waited="
+                                        f"{self.ctx.capacity_waited_sec:.0f}s)"
+                                    ),
+                                )
+                            )
+                            continue
                         reason = (
                             f"no eligible provider (priority={s.priority}; "
                             f"rate limits / health"
@@ -271,10 +299,16 @@ class ReviewScheduler:
                             )
                         reason += ")"
                         skipped.append(SkipRecord(s.chunk, reason))
-                    self.meta.stop_reason = "providers_exhausted"
-                    self.meta.retry_after_sec = cool_hint if cool_hint > 0 else 90.0
+                    if lock_only:
+                        self.meta.stop_reason = "lock_contention"
+                        self.meta.retry_after_sec = LOCK_CONTENTION_RETRY_SEC
+                    else:
+                        self.meta.stop_reason = "providers_exhausted"
+                        self.meta.retry_after_sec = (
+                            cool_hint if cool_hint > 0 else 90.0
+                        )
                     logger.info(
-                        f"Early defer after capacity wait "
+                        f"Early defer ({self.meta.stop_reason}) after capacity wait "
                         f"{self.ctx.capacity_waited_sec:.0f}s/"
                         f"{self.ctx.max_capacity_wait_sec:.0f}s budget"
                     )

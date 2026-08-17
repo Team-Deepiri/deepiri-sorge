@@ -292,6 +292,44 @@ class TestOpenRouterRunner:
 
         assert result is None
 
+    def test_retired_model_fails_over_to_next(self, sample_diff):
+        """A 404 model id must not abort the chain — later models still work.
+
+        meta-llama/llama-3.3-70b-instruct:free was retired while configured
+        third of four, so OpenRouter returned http_404 for the whole provider
+        and the fourth model was never tried.
+        """
+        import requests as req
+
+        runner = OpenRouterRunner(api_key="fake-openrouter-key")
+        runner.models = ["gone/model:free", "works/model:free"]
+        dead = _mock_response({}, status=404)
+        dead.raise_for_status.side_effect = req.HTTPError(response=dead)
+        live = _mock_response(OPENAI_COMPAT_CHAT_COMPLETIONS_RESPONSE)
+
+        with patch("requests.post", side_effect=[dead, live]) as post:
+            result = runner._run_review(sample_diff)
+
+        assert result is not None
+        assert result.summary == "Added input validation"
+        assert post.call_count == 2
+        assert post.call_args_list[1].kwargs["json"]["model"] == "works/model:free"
+
+    def test_last_model_error_still_raises(self, sample_diff):
+        """Failover must not swallow a failure when nothing is left to try."""
+        import requests as req
+
+        runner = OpenRouterRunner(api_key="fake-openrouter-key")
+        runner.models = ["gone/model:free"]
+        dead = _mock_response({}, status=404)
+        dead.raise_for_status.side_effect = req.HTTPError(response=dead)
+
+        with patch("requests.post", return_value=dead):
+            result = runner._run_review(sample_diff)
+
+        assert result is None
+        assert runner._last_http_status == 404
+
 
 class TestGroqRunner:
     def test_returns_none_without_api_key(self, sample_diff):

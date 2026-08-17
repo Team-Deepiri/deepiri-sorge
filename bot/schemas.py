@@ -21,6 +21,7 @@ NO_SCORE_REVIEW_TYPES = frozenset(
         "vacuous_or_truncated",
         "mixed_capacity",
         "providers_exhausted",
+        "lock_contention",
     }
 )
 
