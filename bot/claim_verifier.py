@@ -9,12 +9,23 @@ Policy (confidence rule):
   2. Missing-dependency claims → package.json / requirements / pyproject on HEAD.
   3. Missing-``#include`` claims → the C/C++ file's own include block on HEAD.
   4. "Path X does not exist" claims → the tracked file/directory list on HEAD.
+  5. Missing-import claims, any language → the file's own import lines on HEAD.
+  6. Predicted build/compile failures → CI's verdict on the PR head.
 
-Rationale for (3): a diff only shows changed hunks plus a few lines of context.
-An ``#include`` above the first hunk is invisible to the model, so "you use
+Rationale for (3) and (5): a diff only shows changed hunks plus a few lines of
+context. An import above the first hunk is invisible to the model, so "you use
 open() without including <fcntl.h>" is a reasonable inference from an
 incomplete picture. Checking the file on disk costs zero prompt tokens, where
 widening the diff window would cost them on every chunk.
+
+(5) generalises (3) rather than replacing it. The C-specific path understands
+header basenames (``<sys/mman.h>`` cited as ``mman.h``); the generic path knows
+only that imports sit on their own line and start with one of a small set of
+keywords, which is enough for Rust/Go/Java/C#/JS without a parser per language.
+
+Rationale for (6): predicting a compile error is a claim the real compiler has
+already settled. Only a definite green build disproves it, and a green build is
+evidence about compilation *only* — never about leaks, races, or logic.
 """
 
 from __future__ import annotations
@@ -68,6 +79,111 @@ _DEPENDENCY_MISSING_RE = re.compile(
     r"add\s+(?:to|them\s+to)\s+(?:package\.json|requirements)|"
     r"will\s+lead\s+to\s+runtime\s+errors"
     r")\b"
+)
+
+# Import/include statements, in any language we are likely to review.
+#
+# Deliberately a keyword set rather than per-language parsers: the C-only
+# #include check below could not see `use axum::http::HeaderMap` and reported a
+# false missing-import on a Rust PR. Every language spells this differently but
+# they all put it on its own line near the top of the file, so one line-shape
+# regex covers C/C++/ObjC, Rust, Python, Go, Java, Kotlin, C#, JS/TS, Ruby, PHP
+# without needing to know which language we are looking at.
+_IMPORT_LINE_RE = re.compile(
+    r"""^\s*(?:
+          \#\s*(?:include|import)\b        # C, C++, Objective-C
+        | (?:pub\s+)?use\b                 # Rust, PHP
+        | extern\s+crate\b                 # Rust 2015
+        | import\b                         # Python, Java, Go, JS/TS, Kotlin
+        | from\s+\S+\s+import\b            # Python
+        | using\b                          # C#, C++ using-declarations
+        | require(?:_relative)?\b          # Ruby, Node
+        | include_once\b | require_once\b  # PHP
+    )""",
+    re.VERBOSE,
+)
+
+# An import statement quoted inside the finding itself. When the model writes
+# "add `use axum::http::HeaderMap;`" the suggestion names the symbol far more
+# reliably than prose does, so prefer this over identifier heuristics.
+_IMPORT_STMT_RE = re.compile(
+    r"""(?:
+          \#\s*(?:include|import)\s*[<"']([^>"']+)[>"']
+        | (?:pub\s+)?use\s+([A-Za-z_][\w:.]*(?:::\{[^}]*\})?)
+        | extern\s+crate\s+([A-Za-z_]\w*)
+        | from\s+([A-Za-z_][\w.]*)\s+import\s+([A-Za-z_*][\w,\s]*)
+        | import\s+([A-Za-z_][\w.:/]*)
+        | using\s+([A-Za-z_][\w.]*)
+    )""",
+    re.VERBOSE,
+)
+
+# "X is used but not imported" / "missing import for X" / "unresolved symbol X".
+_IMPORT_CLAIM_RE = re.compile(
+    r"(?i)(?:"
+    r"\b(?:not|never|isn'?t|is\s+not|without)\b[^.;]{0,40}?\bimport(?:ed|s)?\b"
+    r"|\bimport(?:ed|s)?\b[^.;]{0,40}?\b(?:missing|absent|not\s+present|required)\b"
+    r"|\bmissing\s+(?:an?\s+)?(?:import|use\s+statement|using\s+directive)\b"
+    r"|\b(?:add|needs?|requires?)\b[^.;]{0,40}?\b(?:import|use\s+statement)\b"
+    r"|\bunresolved\s+(?:import|symbol|reference)\b"
+    r"|\bnot\s+(?:in\s+scope|declared|brought\s+into\s+scope)\b"
+    r")"
+)
+
+# "this will not compile" / "breaks the build" / "signature mismatch".
+#
+# Cheapest possible disproof: CI already ran the real compiler on the PR head.
+# If every check is green, a finding predicting a build failure at that SHA is
+# wrong, and we know it for zero prompt tokens and without understanding the
+# language. Only build claims — a green build says nothing about a memory leak.
+_BUILD_CLAIM_RE = re.compile(
+    r"(?i)\b(?:"
+    r"compil(?:e|es|ing|ation)\s+(?:error|failure|fail|problem)"
+    r"|(?:will\s+not|won'?t|fails?\s+to|does\s+not|doesn'?t|cannot|can'?t)\s+compil\w*"
+    r"|(?:build|compile)\s+(?:error|failure|break(?:s|age)?)"
+    r"|(?:will|would|could|may)\s+break\s+(?:the\s+)?(?:existing\s+)?"
+    r"(?:build|compilation|route|router|call(?:er|s)?|signature|definition|configuration)"
+    r"|signature\s+mismatch|type\s+mismatch|type\s+error"
+    r"|does\s+not\s+(?:type[\s-]?check|typecheck)"
+    r"|fails\s+to\s+build"
+    r")\b"
+)
+
+# Words that follow "use"/"import"/"require" in ordinary English, so the
+# statement regex above captures them as if they were symbols.
+_IMPORT_PROSE_WORDS = frozenset({
+    "statement", "statements", "directive", "directives", "declaration",
+    "declarations", "clause", "clauses", "line", "lines", "block", "blocks",
+    "it", "them", "this", "that", "these", "those", "the", "a", "an",
+    "of", "for", "from", "in", "at", "to", "and", "or",
+    # Connectives that land in the subject slot of "... but is not imported".
+    "but", "however", "which", "also", "still", "yet", "so", "then",
+    "there", "here", "they", "he", "she", "we", "you", "i", "who",
+    "thus", "therefore", "though", "although", "while", "whereas",
+    "import", "imports", "include", "includes", "use", "uses", "using",
+    "crate", "crates", "module", "modules", "package", "packages",
+    "type", "types", "trait", "traits", "class", "classes",
+})
+
+# The subject of the claim: "`timezone` is referenced but is not imported",
+# "HeaderMap is used as an extractor". Catches bare lowercase identifiers that
+# the code-shape regex below cannot distinguish from prose.
+_IMPORT_SUBJECT_RE = re.compile(
+    r"[`'\"]?\b([A-Za-z_][\w:.]*)\b[`'\"]?\s+(?:is|are|was|were)\s+"
+    r"(?:\w+\s+){0,3}?(?:used|referenced|called|invoked|needed|required|missing"
+    r"|not\s+(?:imported|declared|in\s+scope))"
+)
+
+# Symbols the model put in backticks or quotes.
+_QUOTED_IDENT_RE = re.compile(r"[`'\"]([A-Za-z_][\w:.]{1,60})[`'\"]")
+
+# Identifiers that read like code rather than prose: CamelCase, snake_case,
+# or a qualified path. Used only as a fallback when the finding does not quote
+# an import statement outright.
+_CODE_IDENT_RE = re.compile(
+    r"\b([A-Za-z_][\w]*(?:(?:::|\.)[A-Za-z_]\w*)+"      # foo::Bar, foo.Bar
+    r"|[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]*)+"                # CamelCase
+    r"|[a-z0-9]+_[a-z0-9_]+)\b"                          # snake_case
 )
 
 _CPP_SUFFIXES = frozenset({
@@ -174,9 +290,20 @@ class VerificationReport:
 class ClaimVerifier:
     """Filter structurally impossible / falsely missing-dep findings on PR HEAD."""
 
-    def __init__(self, indexer: SymbolIndexer | None = None):
+    def __init__(
+        self,
+        indexer: SymbolIndexer | None = None,
+        *,
+        build_green: bool | None = None,
+        build_sha: str = "",
+    ):
         self.indexer = indexer or SymbolIndexer()
         self._tracked_cache: dict[Path, tuple[set[str], dict[str, str]]] = {}
+        # CI's verdict on the PR head. None = unknown, and unknown never
+        # suppresses anything. Fetched by the caller so this class stays
+        # network-free and testable.
+        self.build_green = build_green
+        self.build_sha = build_sha
 
     def verify_result(
         self,
@@ -268,6 +395,40 @@ class ClaimVerifier:
 
             if self._looks_include_claim(issue):
                 confidence, symbol, reason = self._evaluate_include(issue, repo_root)
+                if confidence == "disproven":
+                    report.suppressed.append(
+                        SuppressionRecord(
+                            file=issue.file,
+                            line=issue.line,
+                            message=issue.message,
+                            symbol=symbol,
+                            reason=reason,
+                        )
+                    )
+                else:
+                    report.kept.append(issue)
+                continue
+
+            # Generic import check, after the C/C++ header path above: that one
+            # understands header basenames, this one covers every other language.
+            if self._looks_import_claim(issue):
+                confidence, symbol, reason = self._evaluate_import(issue, repo_root)
+                if confidence == "disproven":
+                    report.suppressed.append(
+                        SuppressionRecord(
+                            file=issue.file,
+                            line=issue.line,
+                            message=issue.message,
+                            symbol=symbol,
+                            reason=reason,
+                        )
+                    )
+                    continue
+                # Not disproven as an import claim — it may still be a build
+                # claim CI can settle, so fall through instead of keeping here.
+
+            if self._looks_build_claim(issue):
+                confidence, symbol, reason = self._evaluate_build(issue)
                 if confidence == "disproven":
                     report.suppressed.append(
                         SuppressionRecord(
@@ -558,6 +719,159 @@ class ClaimVerifier:
             logger.debug(f"Include scan read failed for {rel_path}: {exc}")
             return None
         return {m.group(1) for m in _INCLUDE_DIRECTIVE_RE.finditer(source)}
+
+    # ---- generic (language-agnostic) missing-import claims -----------------
+
+    def _looks_import_claim(self, issue: ReviewIssue) -> bool:
+        blob = " ".join(
+            part for part in (issue.message, issue.suggestion or "", issue.rule or "") if part
+        )
+        return bool(_IMPORT_CLAIM_RE.search(blob))
+
+    def _evaluate_import(
+        self,
+        issue: ReviewIssue,
+        repo_root: Path,
+    ) -> tuple[str, str | None, str]:
+        """Disprove "X is not imported" by reading the file's own import lines.
+
+        Language-agnostic on purpose. A symbol that is genuinely un-imported
+        still appears at its use sites, so presence in the file is not enough —
+        the symbol has to appear on a line that is *shaped* like an import.
+        """
+        if not issue.file:
+            return "uncertain", None, "no file on finding"
+
+        symbols = self._extract_import_symbols(issue)
+        if not symbols:
+            return "uncertain", None, "could not extract a symbol name from finding"
+
+        lines = self._read_import_lines(repo_root, issue.file)
+        if lines is None:
+            return "uncertain", symbols[0], f"could not read {issue.file} on HEAD"
+        if not lines:
+            return "uncertain", symbols[0], f"no import statements found in {issue.file}"
+
+        blob = "\n".join(lines)
+        found: list[str] = []
+        missing: list[str] = []
+        for symbol in symbols:
+            # Match the last path segment too: a claim about `axum::http::HeaderMap`
+            # is satisfied by `use axum::http::{HeaderMap, StatusCode};`.
+            leaf = next(
+                (part for part in reversed(re.split(r"::|\.|/", symbol)) if part), ""
+            )
+            # An empty or one-character leaf would match almost any import line,
+            # so it is not evidence of anything.
+            if len(leaf) < 2:
+                continue
+            pattern = re.compile(rf"(?<![\w]){re.escape(leaf)}(?![\w])")
+            if pattern.search(blob):
+                found.append(symbol)
+            else:
+                missing.append(symbol)
+
+        if not found and not missing:
+            return "uncertain", symbols[0], "no usable symbol name in finding"
+
+        if found and not missing:
+            joined = ", ".join(dict.fromkeys(found))
+            return (
+                "disproven",
+                found[0],
+                f"{joined} already imported in {issue.file} on PR HEAD "
+                f"(outside the diff window — diff-only false positive)",
+            )
+        if found and missing:
+            return (
+                "uncertain",
+                missing[0],
+                f"partial: {', '.join(found)} imported; {', '.join(missing)} not found",
+            )
+        return "uncertain", missing[0], "claimed symbols not found in the file's imports"
+
+    def _extract_import_symbols(self, issue: ReviewIssue) -> list[str]:
+        blob = " ".join(part for part in (issue.message, issue.suggestion or "") if part)
+        found: list[str] = []
+
+        def add(name: str | None) -> None:
+            if not name:
+                return
+            name = name.strip().strip("<>\"'`,;{}.").strip()
+            # "the necessary use statement" makes `use ...` match plain prose;
+            # a bare English word is never the symbol we are looking for.
+            if not name or name.lower() in _IMPORT_PROSE_WORDS:
+                return
+            if name not in found:
+                found.append(name)
+
+        # Strongest signal: the finding quotes an import statement outright.
+        for match in _IMPORT_STMT_RE.finditer(blob):
+            for group in match.groups():
+                add(group)
+        if found:
+            return found
+
+        # Next: the grammatical subject of the claim, then quoted symbols. Both
+        # catch bare lowercase identifiers ("timezone") that are indistinguishable
+        # from prose by shape alone.
+        for match in _IMPORT_SUBJECT_RE.finditer(blob):
+            add(match.group(1))
+        for match in _QUOTED_IDENT_RE.finditer(blob):
+            add(match.group(1))
+        if found:
+            return found[:4]
+
+        # Last resort: identifiers that look like code, not prose.
+        for match in _CODE_IDENT_RE.finditer(blob):
+            token = match.group(1)
+            if token.lower() in _STOPWORDS:
+                continue
+            add(token)
+        return found[:4]
+
+    def _read_import_lines(self, repo_root: Path, rel_path: str) -> list[str] | None:
+        path = (repo_root / rel_path).resolve()
+        try:
+            path.relative_to(repo_root.resolve())
+        except ValueError:
+            logger.debug(f"Import scan refused path outside repo: {rel_path}")
+            return None
+        if not path.is_file():
+            return None
+        try:
+            source = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError as exc:
+            logger.debug(f"Import scan read failed for {rel_path}: {exc}")
+            return None
+        return [line for line in source.splitlines() if _IMPORT_LINE_RE.match(line)]
+
+    # ---- build-failure claims, disproved by CI ------------------------------
+
+    def _looks_build_claim(self, issue: ReviewIssue) -> bool:
+        blob = " ".join(
+            part for part in (issue.message, issue.suggestion or "", issue.rule or "") if part
+        )
+        return bool(_BUILD_CLAIM_RE.search(blob))
+
+    def _evaluate_build(self, issue: ReviewIssue) -> tuple[str, str | None, str]:
+        """Disprove a predicted build failure using CI's verdict on the PR head.
+
+        ``self.build_green`` is None whenever we could not establish a verdict
+        (checks still running, no checks configured, unknown head SHA). Only a
+        definite green result disproves anything.
+        """
+        if self.build_green is None:
+            return "uncertain", None, "no CI verdict available for the PR head"
+        if not self.build_green:
+            return "uncertain", None, "CI is not green — build claim may well be right"
+        where = f" at {self.build_sha[:7]}" if self.build_sha else ""
+        return (
+            "disproven",
+            None,
+            f"CI build is green{where} — a predicted compile/build failure is "
+            f"contradicted by the real compiler",
+        )
 
     def _evaluate_dependency(
         self,

@@ -593,3 +593,166 @@ def test_dependency_claim_kept_when_package_really_is_missing(tmp_path: Path):
     report = ClaimVerifier().verify_issues([issue], repo_root=tmp_path)
     assert report.kept == [issue]
     assert report.suppressed_count == 0
+
+
+# --- generic (language-agnostic) missing-import claims ----------------------
+
+
+def _write_rust_routes(root: Path) -> str:
+    rel = "crates/dv-server/src/routes.rs"
+    path = root / rel
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        "use crate::auth::{authorize, extract_api_key};\n"
+        "use axum::body::Body;\n"
+        "use axum::http::{HeaderMap, HeaderValue, StatusCode};\n"
+        "use axum::response::{IntoResponse, Response};\n"
+        "\n"
+        "async fn shard_health(headers: HeaderMap) -> Response {\n"
+        "    todo!()\n"
+        "}\n"
+    )
+    return rel
+
+
+def test_rust_use_statement_disproves_missing_import_claim(tmp_path: Path):
+    """deepiri-topolsea#21: HeaderMap was imported on line 5, one line above the
+    first diff hunk, so the model reported it missing. The C-only #include check
+    could not see a Rust `use`."""
+    rel = _write_rust_routes(tmp_path)
+    issue = ReviewIssue(
+        severity="low",
+        file=rel,
+        line=1,
+        message=(
+            "The HeaderMap type is used as an extractor in several handlers but is "
+            "not imported, leading to a compilation error. The diff does not "
+            "include the necessary use statement."
+        ),
+        suggestion="Add use axum::http::HeaderMap; at the top of routes.rs.",
+    )
+
+    report = ClaimVerifier().verify_issues([issue], repo_root=tmp_path, changed_paths=[rel])
+
+    assert report.kept == []
+    assert report.suppressed_count == 1
+    assert "already imported" in report.suppressed[0].reason
+    # The prose "use statement" must not be mistaken for the symbol.
+    assert report.suppressed[0].symbol == "axum::http::HeaderMap"
+
+
+def test_missing_import_claim_kept_when_symbol_really_is_absent(tmp_path: Path):
+    """The check must not suppress on mere presence: a genuinely un-imported
+    symbol still appears at its use sites."""
+    rel = _write_rust_routes(tmp_path)
+    issue = ReviewIssue(
+        severity="high",
+        file=rel,
+        line=6,
+        message="TypedHeader is used but not imported.",
+        suggestion="Add use axum_extra::TypedHeader;",
+    )
+
+    report = ClaimVerifier().verify_issues([issue], repo_root=tmp_path, changed_paths=[rel])
+
+    assert len(report.kept) == 1
+    assert report.suppressed == []
+
+
+def test_python_import_claim_uses_the_same_generic_path(tmp_path: Path):
+    rel = "app/service.py"
+    path = tmp_path / rel
+    path.parent.mkdir(parents=True)
+    path.write_text("from datetime import timezone\nimport os\n\n\ndef go():\n    return os\n")
+    issue = ReviewIssue(
+        severity="medium",
+        file=rel,
+        line=5,
+        message="timezone is referenced but is not imported in this module.",
+    )
+
+    report = ClaimVerifier().verify_issues([issue], repo_root=tmp_path, changed_paths=[rel])
+
+    assert report.kept == []
+    assert report.suppressed_count == 1
+
+
+def test_import_claim_without_readable_file_is_kept(tmp_path: Path):
+    issue = ReviewIssue(
+        severity="medium",
+        file="does/not/exist.go",
+        line=3,
+        message="fmt is used but not imported.",
+    )
+
+    report = ClaimVerifier().verify_issues([issue], repo_root=tmp_path)
+
+    assert len(report.kept) == 1
+
+
+# --- build-failure claims, disproved by CI ---------------------------------
+
+
+def _build_claim(rel: str = "crates/dv-server/src/routes.rs") -> ReviewIssue:
+    return ReviewIssue(
+        severity="critical",
+        file=rel,
+        line=953,
+        message=(
+            "This will break the existing route definition unless the router "
+            "configuration is updated to match the new handler signature."
+        ),
+        suggestion="Update the route definition.",
+    )
+
+
+def test_green_ci_disproves_a_predicted_build_failure(tmp_path: Path):
+    """deepiri-topolsea#21: the Rust job was green on the reviewed SHA while the
+    model predicted the route definitions would break."""
+    report = ClaimVerifier(build_green=True, build_sha="bb88b1c2").verify_issues(
+        [_build_claim()], repo_root=tmp_path
+    )
+
+    assert report.kept == []
+    assert report.suppressed_count == 1
+    assert "bb88b1c" in report.suppressed[0].reason
+
+
+def test_build_claim_kept_when_ci_is_red(tmp_path: Path):
+    report = ClaimVerifier(build_green=False).verify_issues(
+        [_build_claim()], repo_root=tmp_path
+    )
+    assert len(report.kept) == 1
+
+
+def test_build_claim_kept_when_ci_verdict_is_unknown(tmp_path: Path):
+    """Checks still running, or none configured — no disproof, no suppression."""
+    report = ClaimVerifier(build_green=None).verify_issues(
+        [_build_claim()], repo_root=tmp_path
+    )
+    assert len(report.kept) == 1
+
+
+def test_green_ci_does_not_suppress_logic_claims(tmp_path: Path):
+    """A green build is evidence about compilation only — never about leaks."""
+    issues = [
+        ReviewIssue(
+            severity="high",
+            file="src/archive/cran_reader.cpp",
+            line=86,
+            message="Memory leak: mapping not unmapped on early return when size too small.",
+        ),
+        ReviewIssue(
+            severity="high",
+            file="src/a.rs",
+            line=12,
+            message="This introduces a data race between the two writer threads.",
+        ),
+    ]
+
+    report = ClaimVerifier(build_green=True, build_sha="deadbeef").verify_issues(
+        issues, repo_root=tmp_path
+    )
+
+    assert len(report.kept) == 2
+    assert report.suppressed == []
