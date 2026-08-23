@@ -268,6 +268,43 @@ _STOPWORDS = frozenset({
 })
 
 
+def _collect_import_lines(source: str) -> list[str]:
+    """Import statements, including the bodies of multi-line ones.
+
+    Matching line-by-line kept only the first line of a wrapped import, so
+
+        from app.schemas import (
+            B2BDocumentType,
+        )
+
+    contributed ``from app.schemas import (`` and nothing else. Every symbol in
+    the parenthesised body was invisible to the verifier, which then could not
+    disprove "B2BDocumentType is never imported" even though the binding was
+    right there. Continuation is tracked by bracket depth, which covers
+    Python's parenthesised form, Rust's ``use foo::{A, B}`` and JS named
+    imports without needing to know the language.
+    """
+    lines: list[str] = []
+    depth = 0
+    continued = False
+
+    for line in source.splitlines():
+        starts_import = bool(_IMPORT_LINE_RE.match(line))
+        if not starts_import and depth <= 0 and not continued:
+            continue
+
+        lines.append(line)
+
+        code = line.split("#", 1)[0].split("//", 1)[0]
+        depth += code.count("(") + code.count("{") + code.count("[")
+        depth -= code.count(")") + code.count("}") + code.count("]")
+        depth = max(0, depth)
+        # A trailing backslash continues the statement without any bracket.
+        continued = code.rstrip().endswith("\\")
+
+    return lines
+
+
 @dataclass
 class SuppressionRecord:
     file: str | None
@@ -459,7 +496,13 @@ class ClaimVerifier:
                     report.kept.append(issue)
                 continue
 
-            if not self._looks_structural(issue):
+            # An import claim reaches here only when the file's own import
+            # lines did not settle it. The symbol index is a second, independent
+            # source of the same fact — it records multi-line ImportFrom aliases
+            # as bindings — and phrasings like "referenced but not imported"
+            # never match _STRUCTURAL_RE, so without this they were kept on the
+            # strength of one check that had already come back uncertain.
+            if not self._looks_structural(issue) and not self._looks_import_claim(issue):
                 report.kept.append(issue)
                 continue
 
@@ -844,7 +887,7 @@ class ClaimVerifier:
         except OSError as exc:
             logger.debug(f"Import scan read failed for {rel_path}: {exc}")
             return None
-        return [line for line in source.splitlines() if _IMPORT_LINE_RE.match(line)]
+        return _collect_import_lines(source)
 
     # ---- build-failure claims, disproved by CI ------------------------------
 

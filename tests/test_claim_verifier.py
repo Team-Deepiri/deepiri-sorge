@@ -756,3 +756,110 @@ def test_green_ci_does_not_suppress_logic_claims(tmp_path: Path):
 
     assert len(report.kept) == 2
     assert report.suppressed == []
+
+
+def _write_multiline_import_module(root: Path) -> str:
+    rel = "app/api/document_indexing_api.py"
+    path = root / rel
+    path.parent.mkdir(parents=True)
+    body = "\n".join(f"    return {i}" for i in range(70))
+    path.write_text(
+        "from app.schemas import (\n"
+        "    DocumentType,\n"
+        "    B2BDocumentType,\n"
+        "    Chunk,\n"
+        ")\n"
+        "\n"
+        "\n"
+        "def index(doc):\n"
+        f"{body}\n"
+        "\n"
+        "\n"
+        "def classify(doc):\n"
+        "    return B2BDocumentType.INVOICE\n"
+    )
+    return rel
+
+
+def test_multiline_import_disproves_missing_import_claim(tmp_path: Path):
+    """Regression for diri-cyrex#158.
+
+    The symbol is bound inside a parenthesised import whose body sat outside
+    the diff window. Reading import lines one at a time saw only the opening
+    `from app.schemas import (` and could not disprove the claim.
+    """
+    rel = _write_multiline_import_module(tmp_path)
+    issue = ReviewIssue(
+        severity="high",
+        file=rel,
+        line=84,
+        message=(
+            "B2BDocumentType is used at line 84 but is never imported in this "
+            "module, which will raise a NameError at runtime."
+        ),
+    )
+
+    report = ClaimVerifier().verify_issues([issue], repo_root=tmp_path, changed_paths=[rel])
+
+    assert report.kept == []
+    assert report.suppressed_count == 1
+
+
+def test_multiline_import_claim_phrasing_without_nameerror(tmp_path: Path):
+    """The same fact, phrased so it never matches _STRUCTURAL_RE."""
+    rel = _write_multiline_import_module(tmp_path)
+    issue = ReviewIssue(
+        severity="medium",
+        file=rel,
+        line=84,
+        message="B2BDocumentType is referenced but not imported.",
+        suggestion="Add `from app.schemas import B2BDocumentType`.",
+    )
+
+    report = ClaimVerifier().verify_issues([issue], repo_root=tmp_path, changed_paths=[rel])
+
+    assert report.kept == []
+    assert report.suppressed_count == 1
+
+
+def test_rust_braced_use_block_disproves_missing_import_claim(tmp_path: Path):
+    rel = "crates/dv-server/src/routes.rs"
+    path = tmp_path / rel
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        "use axum::http::{\n"
+        "    HeaderMap,\n"
+        "    StatusCode,\n"
+        "};\n"
+        "\n"
+        "pub async fn shard_health(headers: HeaderMap) -> StatusCode {\n"
+        "    StatusCode::OK\n"
+        "}\n"
+    )
+    issue = ReviewIssue(
+        severity="high",
+        file=rel,
+        line=6,
+        message="HeaderMap is used as an extractor but is not imported.",
+    )
+
+    report = ClaimVerifier().verify_issues([issue], repo_root=tmp_path, changed_paths=[rel])
+
+    assert report.kept == []
+    assert report.suppressed_count == 1
+
+
+def test_genuinely_absent_symbol_still_kept_with_multiline_imports(tmp_path: Path):
+    """The wrapped-import fix must not turn the verifier into a rubber stamp."""
+    rel = _write_multiline_import_module(tmp_path)
+    issue = ReviewIssue(
+        severity="high",
+        file=rel,
+        line=84,
+        message="InvoiceLineItem is used but is never imported in this module.",
+    )
+
+    report = ClaimVerifier().verify_issues([issue], repo_root=tmp_path, changed_paths=[rel])
+
+    assert len(report.kept) == 1
+    assert report.suppressed_count == 0
