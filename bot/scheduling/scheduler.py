@@ -78,6 +78,7 @@ class ReviewScheduler:
         pr_number: int = 0,
         installation_id: int | None = None,
         head_sha: str = "",
+        verify_escalate_issues=None,
     ) -> "ReviewScheduler":
         deadline = time.monotonic() + float(config.scheduler.wall_clock_sec)
         runtimes: dict[str, ProviderRuntime] = {}
@@ -123,6 +124,7 @@ class ReviewScheduler:
             max_capacity_wait_sec=max_cap_wait,
             semaphore=ProviderSemaphore(),
             gemini_dead_max_chunks=max(1, gemini_dead_max),
+            verify_escalate_issues=verify_escalate_issues,
         )
         logger.info(
             f"Provider history loaded ({len(getattr(history, '_stats', {}))} keys); "
@@ -520,6 +522,26 @@ class ReviewScheduler:
         groq_result: ReviewResult,
         reason: str,
     ) -> EscalateTicket:
+        # Verify before seeding, not after. These findings are about to be
+        # pasted into the next model's prompt as settled fact; anything the
+        # repo can disprove must not survive that handoff. Escalating an
+        # invented claim spends one of ~20 daily Gemini calls elaborating on it
+        # — which is how "if anything still calls this, production dies" came
+        # back as "audit harder" instead of as someone opening the file.
+        candidates = list(groq_result.issues or [])
+        if self.ctx.verify_escalate_issues and candidates:
+            try:
+                verified = self.ctx.verify_escalate_issues(candidates)
+            except Exception as exc:  # never fail a review over verification
+                logger.warning(f"Escalate pre-verification failed, seeding raw: {exc}")
+                verified = candidates
+            if len(verified) != len(candidates):
+                logger.info(
+                    f"Escalate pre-verification: {len(candidates)} → {len(verified)} "
+                    f"finding(s) seeded to the next model"
+                )
+            candidates = verified
+
         issues = [
             {
                 "severity": i.severity,
@@ -529,7 +551,7 @@ class ReviewScheduler:
                 "rule": i.rule,
                 "suggestion": i.suggestion,
             }
-            for i in (groq_result.issues or [])
+            for i in candidates
         ]
         return EscalateTicket(
             ticket_id=new_ticket_id(),

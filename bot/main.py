@@ -114,6 +114,7 @@ def run_auto_review(
     pr_number: int = 0,
     installation_id: int | None = None,
     head_sha: str = "",
+    verify_escalate_issues=None,
 ) -> ReviewResultSchema | None:
     """Phase 1: provider-centric scheduler owns dispatch — no worker fallback chain."""
     cache_config = config.cache if config.cache.enabled else None
@@ -202,6 +203,7 @@ def run_auto_review(
         pr_number=pr_number,
         installation_id=installation_id,
         head_sha=head_sha,
+        verify_escalate_issues=verify_escalate_issues,
     )
     logger.info(
         f"Scheduler starting: {len(runnable)} chunk(s), "
@@ -335,6 +337,31 @@ def main() -> None:
 
     review_result: ReviewResultSchema | None = None
 
+    # Fetched once, before the review, because escalation needs it too: a
+    # finding is verified before it is seeded into the next model's prompt,
+    # not only on its way out to the PR comment.
+    head_sha = os.getenv("SORGE_HEAD_SHA", "")
+    build_green, build_reason = fetch_build_verdict(
+        repo=args.repo or "",
+        sha=head_sha,
+        token=github_token or "",
+    )
+    logger.info(f"CI build verdict for claim checks: green={build_green} ({build_reason})")
+
+    claim_verifier = ClaimVerifier(build_green=build_green, build_sha=head_sha)
+
+    def _verify_escalate_issues(issues: list) -> list:
+        """Drop mechanically disprovable findings before they seed escalation."""
+        report = claim_verifier.verify_issues(
+            issues,
+            repo_root=repo_root,
+            changed_paths=parsed_diff.files,
+            indexes=symbol_indexes or None,
+        )
+        return report.kept
+
+    verify_hook = _verify_escalate_issues if config.claim_verifier.enabled else None
+
     if args.mode == "auto":
         review_result = run_auto_review(
             parsed_diff,
@@ -346,7 +373,8 @@ def main() -> None:
             repo=args.repo or "",
             pr_number=args.pr_number or 0,
             installation_id=args.installation_id,
-            head_sha=os.getenv("SORGE_HEAD_SHA", ""),
+            head_sha=head_sha,
+            verify_escalate_issues=verify_hook,
         )
         if not review_result:
             logger.critical("All providers exhausted — review failed")
@@ -377,7 +405,8 @@ def main() -> None:
             repo=args.repo or "",
             pr_number=args.pr_number or 0,
             installation_id=args.installation_id,
-            head_sha=os.getenv("SORGE_HEAD_SHA", ""),
+            head_sha=head_sha,
+            verify_escalate_issues=verify_hook,
         )
         if not review_result:
             logger.critical(f"Review failed: no result from {args.mode}")
@@ -406,19 +435,9 @@ def main() -> None:
 
     if review_result and config.claim_verifier.enabled:
         before = len(review_result.issues)
-        # CI already compiled this SHA; a green build disproves any predicted
-        # compile failure for free. Unknown verdict suppresses nothing.
-        head_sha = os.getenv("SORGE_HEAD_SHA", "")
-        build_green, build_reason = fetch_build_verdict(
-            repo=args.repo or "",
-            sha=head_sha,
-            token=github_token or "",
-        )
-        logger.info(f"CI build verdict for claim checks: green={build_green} ({build_reason})")
-        review_result = ClaimVerifier(
-            build_green=build_green,
-            build_sha=head_sha,
-        ).verify_result(
+        # Same verifier instance the escalate hook used, so the CI verdict is
+        # fetched once per run and its reference searches stay cached.
+        review_result = claim_verifier.verify_result(
             review_result,
             repo_root=repo_root,
             changed_paths=parsed_diff.files,
