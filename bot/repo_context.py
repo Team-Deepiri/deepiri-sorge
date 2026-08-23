@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 import subprocess
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from loguru import logger
 
@@ -70,14 +70,29 @@ SOURCE_EXTENSIONS = frozenset({
 })
 
 IMPORT_RE = re.compile(
-    r"^\+\s*(?:from\s+([\w.]+)\s+import|import\s+([\w.]+))"
+    r"^\s*(?:from\s+([\w.]+)\s+import|import\s+([\w.]+))"
 )
-DEF_RE = re.compile(r"^\+\s*(?:async\s+)?def\s+(\w+)")
-CLASS_RE = re.compile(r"^\+\s*class\s+(\w+)")
-# C/C++: header name from an added #include, and class/struct/namespace decls.
-INCLUDE_RE = re.compile(r"^\+\s*#\s*include\s*[<\"]([^>\"]+)[>\"]")
-CPP_TYPE_RE = re.compile(r"^\+\s*(?:class|struct|namespace|enum(?:\s+class)?)\s+(\w+)")
+DEF_RE = re.compile(r"^\s*(?:async\s+)?def\s+(\w+)")
+CLASS_RE = re.compile(r"^\s*class\s+(\w+)")
+# C/C++: header name from a changed #include, and class/struct/namespace decls.
+INCLUDE_RE = re.compile(r"^\s*#\s*include\s*[<\"]([^>\"]+)[>\"]")
+CPP_TYPE_RE = re.compile(r"^\s*(?:class|struct|namespace|enum(?:\s+class)?)\s+(\w+)")
 TOKEN_RE = re.compile(r"[a-zA-Z_][\w]{2,}")
+# Path-shaped tokens in a changed line: `cyrex-agi/bedd`, `/usr/local/bin/bedd`.
+# Their segments are deliberate names rather than prose, so they earn a lower
+# length floor than the bare-token scan — a removed binary is often a short
+# word ("bedd") that would otherwise never become an anchor.
+PATH_TOKEN_RE = re.compile(r"[A-Za-z0-9_./-]*/[A-Za-z0-9_./-]+")
+PATH_SEGMENT_MIN = 4
+
+# Anchor weights — how deliberate a name is, which is what should survive the
+# `max_anchors` cap. A declared symbol or a path segment is something somebody
+# chose to write; a five-letter word lifted out of a build command is not.
+WEIGHT_SYMBOL = 4.0
+WEIGHT_CHANGED_FILE = 3.5
+WEIGHT_PATH_SEGMENT = 3.0
+WEIGHT_SYMBOL_PART = 2.0
+WEIGHT_TOKEN = 1.0
 SYMBOL_LINE_RE = re.compile(
     r"^(?:async\s+)?def\s+\w+"
     r"|^class\s+\w+"
@@ -196,20 +211,40 @@ class RepoContextWeaver:
         )
         return pack
 
-    def _extract_anchors(self, diff: ParsedDiff) -> set[str]:
-        anchors: set[str] = set()
+    def _extract_anchors(self, diff: ParsedDiff) -> dict[str, float]:
+        """Map anchor → weight, where weight reflects how deliberate the name is.
 
-        for line in diff.raw.splitlines():
-            if not line.startswith("+") or line.startswith("+++"):
+        Weight, not length, decides what survives ``max_anchors``. Ranking by
+        length dropped "bedd" — the removed binary the whole PR was about — in
+        favour of incidental prose like "release" and "builder".
+        """
+        anchors: dict[str, float] = {}
+
+        def add(name: str, weight: float) -> None:
+            lower = name.lower()
+            if lower in STOPWORDS:
+                return
+            anchors[lower] = max(anchors.get(lower, 0.0), weight)
+
+        for raw_line in diff.raw.splitlines():
+            # Removed lines carry the same evidence value as added ones. A PR
+            # that only deletes (an unwired Docker stage, a dropped Prisma
+            # model) produced zero anchors while this read `+` alone, so
+            # REPO_CONTEXT came back empty and the model reviewed the diff with
+            # no repository evidence at all — the single largest source of
+            # invented "this removal breaks production" findings.
+            if raw_line.startswith("+") and not raw_line.startswith("+++"):
+                line = raw_line[1:]
+            elif raw_line.startswith("-") and not raw_line.startswith("---"):
+                line = raw_line[1:]
+            else:
                 continue
 
             # #include <sys/mman.h> → anchor on "mman", not the ".h" suffix.
             include_match = INCLUDE_RE.match(line)
             if include_match:
                 header = include_match.group(1)
-                stem = Path(header).stem
-                if stem.lower() not in STOPWORDS:
-                    anchors.add(stem.lower())
+                add(Path(header).stem, WEIGHT_SYMBOL)
 
             for pattern in (IMPORT_RE, DEF_RE, CLASS_RE, CPP_TYPE_RE):
                 match = pattern.match(line)
@@ -217,27 +252,41 @@ class RepoContextWeaver:
                     for group in match.groups():
                         if group:
                             leaf = group.split(".")[-1]
-                            if leaf.lower() not in STOPWORDS:
-                                anchors.add(leaf.lower())
+                            add(leaf, WEIGHT_SYMBOL)
                             for part in re.split(r"[_-]", leaf):
-                                if len(part) >= 4 and part.lower() not in STOPWORDS:
-                                    anchors.add(part.lower())
+                                if len(part) >= PATH_SEGMENT_MIN:
+                                    add(part, WEIGHT_SYMBOL_PART)
 
-            for token in TOKEN_RE.findall(line[1:]):
-                lower = token.lower()
-                if len(lower) >= 5 and lower not in STOPWORDS:
-                    anchors.add(lower)
+            for token in TOKEN_RE.findall(line):
+                if len(token) >= 5:
+                    add(token, WEIGHT_TOKEN)
+
+            for path_token in PATH_TOKEN_RE.findall(line):
+                for segment in re.split(r"[/.]", path_token):
+                    if len(segment) >= PATH_SEGMENT_MIN:
+                        add(segment, WEIGHT_PATH_SEGMENT)
+
+        # The changed files themselves name what the PR is about. A deletion in
+        # `worker/bedd_bridge.py` should search for "bedd_bridge" even when the
+        # removed body mentions it nowhere.
+        for rel in diff.files:
+            stem = PurePosixPath(rel).stem
+            if len(stem) >= PATH_SEGMENT_MIN:
+                add(stem, WEIGHT_CHANGED_FILE)
+            for part in re.split(r"[_-]", stem):
+                if len(part) >= PATH_SEGMENT_MIN:
+                    add(part, WEIGHT_CHANGED_FILE)
 
         return anchors
 
-    def _rank_anchors(self, anchors: set[str]) -> list[str]:
-        """Prefer symbol-like anchors over generic tokens; cap count for search cost."""
+    def _rank_anchors(self, anchors: dict[str, float]) -> list[str]:
+        """Prefer deliberate names over incidental prose; cap for search cost."""
         ranked = sorted(
-            anchors,
-            key=lambda a: (len(a) >= 6, "_" in a or a.islower(), len(a)),
+            anchors.items(),
+            key=lambda item: (item[1], len(item[0])),
             reverse=True,
         )
-        return ranked[: self.config.max_anchors]
+        return [name for name, _ in ranked[: self.config.max_anchors]]
 
     def _list_tracked_files(self, repo_root: Path) -> list[str]:
         try:
