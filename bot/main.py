@@ -286,6 +286,14 @@ def main() -> None:
     if decision.action == Action.SKIP and args.force:
         logger.info(f"Force review — overriding skip: {decision.reason}")
 
+    # After the skip decision so a lockfile-only PR still skips as deps-only.
+    parsed_diff, generated_files = engine.strip_generated_files(parsed_diff)
+    if generated_files:
+        logger.info(
+            f"Excluded {len(generated_files)} generated file(s) from review: "
+            f"{', '.join(generated_files[:5])}"
+        )
+
     repo_root = Path(args.repo_root)
     context_pack = RepoContextWeaver(config.repo_context).weave(
         repo_root,
