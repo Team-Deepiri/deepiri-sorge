@@ -863,3 +863,148 @@ def test_genuinely_absent_symbol_still_kept_with_multiline_imports(tmp_path: Pat
 
     assert len(report.kept) == 1
     assert report.suppressed_count == 0
+
+
+def _git_repo(root: Path, files: dict[str, str]) -> Path:
+    for rel, body in files.items():
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body)
+    subprocess.run(["git", "-C", str(root), "init", "-q"], check=True)
+    subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+    subprocess.run(
+        ["git", "-C", str(root), "-c", "user.email=t@t", "-c", "user.name=t",
+         "commit", "-qm", "init"],
+        check=True,
+    )
+    return root
+
+
+def test_removal_claim_disproven_when_nothing_references_the_binary(tmp_path: Path):
+    """Regression for the Bedd-unwire batch.
+
+    The Dockerfile stage that built `bedd` is gone and nothing in the tree
+    reaches for it, so "the runtime will fail" is disprovable by grep.
+    """
+    _git_repo(
+        tmp_path,
+        {
+            "Dockerfile": "FROM python:3.12\nCOPY app ./app\n",
+            "app/main.py": "def run():\n    return 'ok'\n",
+            "docker-compose.yml": "services:\n  app:\n    build: .\n",
+        },
+    )
+    issue = ReviewIssue(
+        severity="high",
+        file="Dockerfile",
+        line=12,
+        message=(
+            "Removing the `bedd` binary from the image will cause a runtime "
+            "failure for any process that spawns it."
+        ),
+    )
+
+    report = ClaimVerifier().verify_issues(
+        [issue], repo_root=tmp_path, changed_paths=["Dockerfile"]
+    )
+
+    assert report.kept == []
+    assert report.suppressed_count == 1
+    assert "no tracked file" in report.suppressed[0].reason
+
+
+def test_removal_claim_kept_when_a_caller_survives(tmp_path: Path):
+    """The other direction, and the bug Sorge actually missed.
+
+    scripts/smoke-test.js still calls prisma.embedding.create after the model
+    was dropped, so the finding must survive.
+    """
+    _git_repo(
+        tmp_path,
+        {
+            "prisma/schema.prisma": "model Document {\n  id String @id\n}\n",
+            "scripts/smoke-test.js": (
+                "await prisma.embedding.create({ data: { vector: [] } });\n"
+            ),
+        },
+    )
+    issue = ReviewIssue(
+        severity="high",
+        file="prisma/schema.prisma",
+        line=1,
+        message=(
+            "Dropping the `prisma.embedding` model will break any code that "
+            "still calls it at runtime."
+        ),
+    )
+
+    report = ClaimVerifier().verify_issues(
+        [issue], repo_root=tmp_path, changed_paths=["prisma/schema.prisma"]
+    )
+
+    assert len(report.kept) == 1
+    assert report.suppressed_count == 0
+
+
+def test_removal_claim_searches_non_source_files(tmp_path: Path):
+    """A surviving reference in a compose file counts, not just in .py/.js."""
+    _git_repo(
+        tmp_path,
+        {
+            "Dockerfile": "FROM python:3.12\n",
+            "docker-compose.yml": "services:\n  app:\n    environment:\n      BEDD_ENDPOINT: http://bedd:9000\n",
+        },
+    )
+    issue = ReviewIssue(
+        severity="high",
+        file="Dockerfile",
+        line=4,
+        message="Removing `BEDD_ENDPOINT` will break the running container.",
+    )
+
+    report = ClaimVerifier().verify_issues(
+        [issue], repo_root=tmp_path, changed_paths=["Dockerfile"]
+    )
+
+    assert len(report.kept) == 1
+    assert report.suppressed_count == 0
+
+
+def test_removal_claim_ignores_the_changed_file_itself(tmp_path: Path):
+    """The removal site still mentions the name in its own diff context."""
+    _git_repo(
+        tmp_path,
+        {
+            "Dockerfile": "FROM rust:1.79 AS bedd-builder\nRUN cargo build --bin bedd\n",
+            "app/main.py": "def run():\n    return 'ok'\n",
+        },
+    )
+    issue = ReviewIssue(
+        severity="high",
+        file="Dockerfile",
+        line=1,
+        message="Deleting the `bedd` stage will cause the container to fail at runtime.",
+    )
+
+    report = ClaimVerifier().verify_issues(
+        [issue], repo_root=tmp_path, changed_paths=["Dockerfile"]
+    )
+
+    assert report.kept == []
+    assert report.suppressed_count == 1
+
+
+def test_removal_claim_kept_when_repo_is_not_a_git_checkout(tmp_path: Path):
+    """No search, no disproof — unknown never suppresses."""
+    (tmp_path / "Dockerfile").write_text("FROM python:3.12\n")
+    issue = ReviewIssue(
+        severity="high",
+        file="Dockerfile",
+        line=1,
+        message="Removing the `bedd` binary will break the runtime.",
+    )
+
+    report = ClaimVerifier().verify_issues([issue], repo_root=tmp_path)
+
+    assert len(report.kept) == 1
+    assert report.suppressed_count == 0
