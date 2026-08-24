@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 from bot.quota_tracker import QuotaTracker
 from bot.scheduling.health import HealthTracker
@@ -50,6 +52,11 @@ class RunContext:
     semaphore: ProviderSemaphore | None = None
     # When Gemini soft RPD is exhausted, only attempt this many free-tier chunks.
     gemini_dead_max_chunks: int = 8
+    # Drops findings the repo can mechanically disprove, before they are copied
+    # into an escalate ticket and shown to the next model as established fact.
+    # Injected so the scheduler stays filesystem-free and testable; None means
+    # no verification, which is what every existing caller gets.
+    verify_escalate_issues: "Callable[[list[Any]], list[Any]] | None" = None
 
     def alive(self) -> bool:
         return time.monotonic() < self.deadline

@@ -1004,3 +1004,94 @@ def test_unresolved_contention_reports_lock_contention(monkeypatch):
     assert "lock_contention" in skipped[0].reason
     # It actually waited, rather than giving up on the first denial.
     assert sch.ctx.capacity_waited_sec > 0
+
+
+def _scheduler_for_ticket_test(*, verify_escalate_issues):
+    """Minimal scheduler wired only for _ticket_from_pending."""
+    from bot.scheduling.run_context import ProviderRuntime, RunContext
+
+    run = RunContext(
+        providers={
+            "groq": ProviderRuntime(
+                name="groq",
+                bucket=TokenBucket(30),
+                health=HealthTracker(100),
+                max_context_tokens=100000,
+                max_inflight=1,
+                nominal_latency_ms=200,
+                quality_prior=0.9,
+            ),
+        },
+        quota=QuotaTracker(limits={"gpt": 100}, used={"gpt": 0}),
+        deadline=time.monotonic() + 30,
+        verify_escalate_issues=verify_escalate_issues,
+    )
+    scheduler = ReviewScheduler([], run)
+    chunk = ReviewChunk(
+        files=["a.py"],
+        parsed_diff=ParsedDiff(raw="+x"),
+        estimated_tokens=500,
+    )
+    return scheduler, ScheduledChunk(chunk=chunk)
+
+
+def test_escalate_ticket_drops_findings_the_verifier_disproves():
+    """Only verified findings are seeded into the next model's prompt.
+
+    Regression for language-intelligence-service#75: Groq's unverified guess
+    was pasted into Gemini's prompt as fact and came back amplified.
+    """
+    from bot.schemas import ReviewIssue, ReviewResult
+
+    real = ReviewIssue(severity="high", file="a.py", line=3, message="real race")
+    bogus = ReviewIssue(severity="high", file="a.py", line=9, message="invented crash")
+
+    scheduler, sched_chunk = _scheduler_for_ticket_test(
+        verify_escalate_issues=lambda issues: [i for i in issues if i is real]
+    )
+    groq_result = ReviewResult(
+        summary="s", score=5.0, issues=[real, bogus], review_type="groq",
+        recommendations=[], latency_ms=1.0, model="groq-test"
+    )
+
+    ticket = scheduler._ticket_from_pending(sched_chunk, groq_result, "complexity")
+
+    assert [i["message"] for i in ticket.groq_issues] == ["real race"]
+
+
+def test_escalate_ticket_seeds_everything_without_a_verifier():
+    """No hook configured means the previous behaviour, unchanged."""
+    from bot.schemas import ReviewIssue, ReviewResult
+
+    a = ReviewIssue(severity="high", file="a.py", line=3, message="one")
+    b = ReviewIssue(severity="low", file="a.py", line=9, message="two")
+
+    scheduler, sched_chunk = _scheduler_for_ticket_test(verify_escalate_issues=None)
+    groq_result = ReviewResult(
+        summary="s", score=5.0, issues=[a, b], review_type="groq",
+        recommendations=[], latency_ms=1.0, model="groq-test"
+    )
+
+    ticket = scheduler._ticket_from_pending(sched_chunk, groq_result, "complexity")
+
+    assert [i["message"] for i in ticket.groq_issues] == ["one", "two"]
+
+
+def test_escalate_ticket_seeds_raw_when_verification_raises():
+    """Verification must never fail a review; fall back to seeding raw."""
+    from bot.schemas import ReviewIssue, ReviewResult
+
+    a = ReviewIssue(severity="high", file="a.py", line=3, message="one")
+
+    def _boom(_issues):
+        raise RuntimeError("git exploded")
+
+    scheduler, sched_chunk = _scheduler_for_ticket_test(verify_escalate_issues=_boom)
+    groq_result = ReviewResult(
+        summary="s", score=5.0, issues=[a], review_type="groq",
+        recommendations=[], latency_ms=1.0, model="groq-test"
+    )
+
+    ticket = scheduler._ticket_from_pending(sched_chunk, groq_result, "complexity")
+
+    assert [i["message"] for i in ticket.groq_issues] == ["one"]
