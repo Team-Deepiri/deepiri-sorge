@@ -130,6 +130,30 @@ _IMPORT_CLAIM_RE = re.compile(
     r")"
 )
 
+# "removing X breaks Y" / "X is deleted but still used at runtime".
+#
+# The Bedd-unwire batch was almost entirely this shape: a Dockerfile stage that
+# built an unused binary was deleted, and the model asserted the runtime would
+# now fail. Whether anything still reaches for the removed thing is a question
+# a grep answers exactly, in both directions — no callers disproves the claim,
+# and a surviving caller is a real bug worth keeping.
+_REMOVAL_CLAIM_RE = re.compile(
+    r"(?i)\b(?:"
+    r"remov(?:e|es|ed|ing|al)|delet(?:e|es|ed|ing)|dropp?(?:ed|ing)?|"
+    r"no\s+longer\s+(?:present|available|built|installed|exists?|shipped)|"
+    r"stripp?(?:ed|ing)|unwir(?:e|ed|ing)|elimina(?:te|ted|ting)"
+    r")\b"
+)
+_REMOVAL_BREAKS_RE = re.compile(
+    r"(?i)\b(?:"
+    r"break(?:s|age)?|fail(?:s|ure|ing)?|crash(?:es|ing)?|"
+    r"runtime\s+(?:error|failure)|will\s+not\s+start|won'?t\s+start|"
+    r"missing\s+at\s+runtime|not\s+found\s+at\s+runtime|"
+    r"still\s+(?:used|referenced|called|invoked|require[sd])|"
+    r"depend(?:s|ent|encies)\s+on\s+it|production\s+(?:dies|breaks|outage)"
+    r")\b"
+)
+
 # "this will not compile" / "breaks the build" / "signature mismatch".
 #
 # Cheapest possible disproof: CI already ran the real compiler on the PR head.
@@ -268,6 +292,43 @@ _STOPWORDS = frozenset({
 })
 
 
+def _collect_import_lines(source: str) -> list[str]:
+    """Import statements, including the bodies of multi-line ones.
+
+    Matching line-by-line kept only the first line of a wrapped import, so
+
+        from app.schemas import (
+            B2BDocumentType,
+        )
+
+    contributed ``from app.schemas import (`` and nothing else. Every symbol in
+    the parenthesised body was invisible to the verifier, which then could not
+    disprove "B2BDocumentType is never imported" even though the binding was
+    right there. Continuation is tracked by bracket depth, which covers
+    Python's parenthesised form, Rust's ``use foo::{A, B}`` and JS named
+    imports without needing to know the language.
+    """
+    lines: list[str] = []
+    depth = 0
+    continued = False
+
+    for line in source.splitlines():
+        starts_import = bool(_IMPORT_LINE_RE.match(line))
+        if not starts_import and depth <= 0 and not continued:
+            continue
+
+        lines.append(line)
+
+        code = line.split("#", 1)[0].split("//", 1)[0]
+        depth += code.count("(") + code.count("{") + code.count("[")
+        depth -= code.count(")") + code.count("}") + code.count("]")
+        depth = max(0, depth)
+        # A trailing backslash continues the statement without any bracket.
+        continued = code.rstrip().endswith("\\")
+
+    return lines
+
+
 @dataclass
 class SuppressionRecord:
     file: str | None
@@ -299,6 +360,7 @@ class ClaimVerifier:
     ):
         self.indexer = indexer or SymbolIndexer()
         self._tracked_cache: dict[Path, tuple[set[str], dict[str, str]]] = {}
+        self._reference_cache: dict[tuple[Path, str], list[str] | None] = {}
         # CI's verdict on the PR head. None = unknown, and unknown never
         # suppresses anything. Fetched by the caller so this class stays
         # network-free and testable.
@@ -393,6 +455,27 @@ class ClaimVerifier:
                     report.kept.append(issue)
                 continue
 
+            # Before the import/build checks: "you removed the bedd binary and
+            # the runtime will fail" is not a missing-import claim, and none of
+            # the checks below can settle it.
+            if self._looks_removal_claim(issue):
+                confidence, symbol, reason = self._evaluate_removal(
+                    issue, repo_root, changed_paths
+                )
+                if confidence == "disproven":
+                    report.suppressed.append(
+                        SuppressionRecord(
+                            file=issue.file,
+                            line=issue.line,
+                            message=issue.message,
+                            symbol=symbol,
+                            reason=reason,
+                        )
+                    )
+                else:
+                    report.kept.append(issue)
+                continue
+
             if self._looks_include_claim(issue):
                 confidence, symbol, reason = self._evaluate_include(issue, repo_root)
                 if confidence == "disproven":
@@ -459,7 +542,13 @@ class ClaimVerifier:
                     report.kept.append(issue)
                 continue
 
-            if not self._looks_structural(issue):
+            # An import claim reaches here only when the file's own import
+            # lines did not settle it. The symbol index is a second, independent
+            # source of the same fact — it records multi-line ImportFrom aliases
+            # as bindings — and phrasings like "referenced but not imported"
+            # never match _STRUCTURAL_RE, so without this they were kept on the
+            # strength of one check that had already come back uncertain.
+            if not self._looks_structural(issue) and not self._looks_import_claim(issue):
                 report.kept.append(issue)
                 continue
 
@@ -582,6 +671,131 @@ class ClaimVerifier:
         for token in _PATH_TOKEN_RE.findall(blob):
             add(token)
         return found
+
+    # ---- removal claims, settled by searching for surviving references ------
+
+    def _looks_removal_claim(self, issue: ReviewIssue) -> bool:
+        blob = " ".join(
+            part for part in (issue.message, issue.suggestion or "", issue.rule or "") if part
+        )
+        return bool(_REMOVAL_CLAIM_RE.search(blob) and _REMOVAL_BREAKS_RE.search(blob))
+
+    def _evaluate_removal(
+        self,
+        issue: ReviewIssue,
+        repo_root: Path,
+        changed_paths: list[str] | None,
+    ) -> tuple[str, str | None, str]:
+        """Disprove "removing X breaks things" when nothing references X.
+
+        Searches every tracked file, not just source extensions: the caller that
+        matters is as likely to live in a compose file, a shell script or a
+        JSON manifest as in a .py. Silence is the disproof; a surviving
+        reference keeps the finding, which is how the one real leftover in this
+        batch (scripts/smoke-test.js calling prisma.embedding) would have been
+        caught rather than invented around.
+        """
+        symbols = self._extract_removal_symbols(issue)
+        if not symbols:
+            return "uncertain", None, "could not extract a removed name from finding"
+
+        excluded = {p for p in (changed_paths or [])}
+        if issue.file:
+            excluded.add(issue.file)
+
+        checked: list[str] = []
+        for symbol in symbols:
+            hits = self._find_references(repo_root, symbol)
+            if hits is None:
+                return "uncertain", symbol, "reference search unavailable"
+
+            surviving = [h for h in hits if h not in excluded]
+            if surviving:
+                shown = ", ".join(surviving[:3])
+                return (
+                    "uncertain",
+                    symbol,
+                    f"{symbol} is still referenced on PR HEAD by {shown}",
+                )
+            checked.append(symbol)
+
+        joined = ", ".join(checked)
+        return (
+            "disproven",
+            checked[0],
+            f"no tracked file outside the diff references {joined} on PR HEAD",
+        )
+
+    def _extract_removal_symbols(self, issue: ReviewIssue) -> list[str]:
+        """Names the finding says were removed: backticked/quoted first."""
+        blob = " ".join(part for part in (issue.message, issue.suggestion or "") if part)
+        found: list[str] = []
+
+        def add(name: str | None) -> None:
+            if not name:
+                return
+            name = name.strip().strip("`'\"<>(),;:").strip()
+            # A bare path reduces to its basename: the finding may cite
+            # /usr/local/bin/bedd while callers just say `bedd`.
+            if "/" in name:
+                name = PurePosixPath(name).name
+            if len(name) < 3 or name.lower() in _IMPORT_PROSE_WORDS:
+                return
+            if name.lower() in _STOPWORDS:
+                return
+            if name not in found:
+                found.append(name)
+
+        for match in _BACKTICK_RE.finditer(blob):
+            add(match.group(1))
+        for match in _QUOTED_RE.finditer(blob):
+            add(match.group(1))
+        if found:
+            return found[:3]
+
+        # ENV_VAR_STYLE and CamelCase/snake_case identifiers read as deliberate
+        # names; ordinary prose does not.
+        for match in re.finditer(r"\b([A-Z][A-Z0-9_]{2,}|[A-Za-z_][\w]*(?:\.[A-Za-z_]\w*)+)\b", blob):
+            add(match.group(1))
+        for match in _CODE_IDENT_RE.finditer(blob):
+            add(match.group(1))
+        return found[:3]
+
+    def _find_references(self, repo_root: Path, symbol: str) -> list[str] | None:
+        """Tracked files containing `symbol`. None when the search cannot run."""
+        key = (repo_root, symbol)
+        if key in self._reference_cache:
+            return self._reference_cache[key]
+
+        try:
+            proc = subprocess.run(
+                [
+                    "git", "-C", str(repo_root), "grep",
+                    "--fixed-strings", "--name-only", "--ignore-case",
+                    "-e", symbol,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+        except (subprocess.SubprocessError, FileNotFoundError, OSError) as exc:
+            logger.debug(f"Reference search failed for {symbol}: {exc}")
+            self._reference_cache[key] = None
+            return None
+
+        # git grep exits 1 for "no matches", which is a real answer, not a
+        # failure. Anything else means the search itself did not run.
+        if proc.returncode not in (0, 1):
+            logger.debug(
+                f"Reference search for {symbol} exited {proc.returncode}: "
+                f"{proc.stderr.strip()[:120]}"
+            )
+            self._reference_cache[key] = None
+            return None
+
+        hits = [line for line in proc.stdout.splitlines() if line]
+        self._reference_cache[key] = hits
+        return hits
 
     def _tracked_paths(self, repo_root: Path) -> tuple[set[str], dict[str, str]]:
         """Return (directory set, basename → first matching path) for HEAD."""
@@ -844,7 +1058,7 @@ class ClaimVerifier:
         except OSError as exc:
             logger.debug(f"Import scan read failed for {rel_path}: {exc}")
             return None
-        return [line for line in source.splitlines() if _IMPORT_LINE_RE.match(line)]
+        return _collect_import_lines(source)
 
     # ---- build-failure claims, disproved by CI ------------------------------
 

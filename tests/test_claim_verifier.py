@@ -756,3 +756,255 @@ def test_green_ci_does_not_suppress_logic_claims(tmp_path: Path):
 
     assert len(report.kept) == 2
     assert report.suppressed == []
+
+
+def _write_multiline_import_module(root: Path) -> str:
+    rel = "app/api/document_indexing_api.py"
+    path = root / rel
+    path.parent.mkdir(parents=True)
+    body = "\n".join(f"    return {i}" for i in range(70))
+    path.write_text(
+        "from app.schemas import (\n"
+        "    DocumentType,\n"
+        "    B2BDocumentType,\n"
+        "    Chunk,\n"
+        ")\n"
+        "\n"
+        "\n"
+        "def index(doc):\n"
+        f"{body}\n"
+        "\n"
+        "\n"
+        "def classify(doc):\n"
+        "    return B2BDocumentType.INVOICE\n"
+    )
+    return rel
+
+
+def test_multiline_import_disproves_missing_import_claim(tmp_path: Path):
+    """Regression for diri-cyrex#158.
+
+    The symbol is bound inside a parenthesised import whose body sat outside
+    the diff window. Reading import lines one at a time saw only the opening
+    `from app.schemas import (` and could not disprove the claim.
+    """
+    rel = _write_multiline_import_module(tmp_path)
+    issue = ReviewIssue(
+        severity="high",
+        file=rel,
+        line=84,
+        message=(
+            "B2BDocumentType is used at line 84 but is never imported in this "
+            "module, which will raise a NameError at runtime."
+        ),
+    )
+
+    report = ClaimVerifier().verify_issues([issue], repo_root=tmp_path, changed_paths=[rel])
+
+    assert report.kept == []
+    assert report.suppressed_count == 1
+
+
+def test_multiline_import_claim_phrasing_without_nameerror(tmp_path: Path):
+    """The same fact, phrased so it never matches _STRUCTURAL_RE."""
+    rel = _write_multiline_import_module(tmp_path)
+    issue = ReviewIssue(
+        severity="medium",
+        file=rel,
+        line=84,
+        message="B2BDocumentType is referenced but not imported.",
+        suggestion="Add `from app.schemas import B2BDocumentType`.",
+    )
+
+    report = ClaimVerifier().verify_issues([issue], repo_root=tmp_path, changed_paths=[rel])
+
+    assert report.kept == []
+    assert report.suppressed_count == 1
+
+
+def test_rust_braced_use_block_disproves_missing_import_claim(tmp_path: Path):
+    rel = "crates/dv-server/src/routes.rs"
+    path = tmp_path / rel
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        "use axum::http::{\n"
+        "    HeaderMap,\n"
+        "    StatusCode,\n"
+        "};\n"
+        "\n"
+        "pub async fn shard_health(headers: HeaderMap) -> StatusCode {\n"
+        "    StatusCode::OK\n"
+        "}\n"
+    )
+    issue = ReviewIssue(
+        severity="high",
+        file=rel,
+        line=6,
+        message="HeaderMap is used as an extractor but is not imported.",
+    )
+
+    report = ClaimVerifier().verify_issues([issue], repo_root=tmp_path, changed_paths=[rel])
+
+    assert report.kept == []
+    assert report.suppressed_count == 1
+
+
+def test_genuinely_absent_symbol_still_kept_with_multiline_imports(tmp_path: Path):
+    """The wrapped-import fix must not turn the verifier into a rubber stamp."""
+    rel = _write_multiline_import_module(tmp_path)
+    issue = ReviewIssue(
+        severity="high",
+        file=rel,
+        line=84,
+        message="InvoiceLineItem is used but is never imported in this module.",
+    )
+
+    report = ClaimVerifier().verify_issues([issue], repo_root=tmp_path, changed_paths=[rel])
+
+    assert len(report.kept) == 1
+    assert report.suppressed_count == 0
+
+
+def _git_repo(root: Path, files: dict[str, str]) -> Path:
+    for rel, body in files.items():
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body)
+    subprocess.run(["git", "-C", str(root), "init", "-q"], check=True)
+    subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+    subprocess.run(
+        ["git", "-C", str(root), "-c", "user.email=t@t", "-c", "user.name=t",
+         "commit", "-qm", "init"],
+        check=True,
+    )
+    return root
+
+
+def test_removal_claim_disproven_when_nothing_references_the_binary(tmp_path: Path):
+    """Regression for the Bedd-unwire batch.
+
+    The Dockerfile stage that built `bedd` is gone and nothing in the tree
+    reaches for it, so "the runtime will fail" is disprovable by grep.
+    """
+    _git_repo(
+        tmp_path,
+        {
+            "Dockerfile": "FROM python:3.12\nCOPY app ./app\n",
+            "app/main.py": "def run():\n    return 'ok'\n",
+            "docker-compose.yml": "services:\n  app:\n    build: .\n",
+        },
+    )
+    issue = ReviewIssue(
+        severity="high",
+        file="Dockerfile",
+        line=12,
+        message=(
+            "Removing the `bedd` binary from the image will cause a runtime "
+            "failure for any process that spawns it."
+        ),
+    )
+
+    report = ClaimVerifier().verify_issues(
+        [issue], repo_root=tmp_path, changed_paths=["Dockerfile"]
+    )
+
+    assert report.kept == []
+    assert report.suppressed_count == 1
+    assert "no tracked file" in report.suppressed[0].reason
+
+
+def test_removal_claim_kept_when_a_caller_survives(tmp_path: Path):
+    """The other direction, and the bug Sorge actually missed.
+
+    scripts/smoke-test.js still calls prisma.embedding.create after the model
+    was dropped, so the finding must survive.
+    """
+    _git_repo(
+        tmp_path,
+        {
+            "prisma/schema.prisma": "model Document {\n  id String @id\n}\n",
+            "scripts/smoke-test.js": (
+                "await prisma.embedding.create({ data: { vector: [] } });\n"
+            ),
+        },
+    )
+    issue = ReviewIssue(
+        severity="high",
+        file="prisma/schema.prisma",
+        line=1,
+        message=(
+            "Dropping the `prisma.embedding` model will break any code that "
+            "still calls it at runtime."
+        ),
+    )
+
+    report = ClaimVerifier().verify_issues(
+        [issue], repo_root=tmp_path, changed_paths=["prisma/schema.prisma"]
+    )
+
+    assert len(report.kept) == 1
+    assert report.suppressed_count == 0
+
+
+def test_removal_claim_searches_non_source_files(tmp_path: Path):
+    """A surviving reference in a compose file counts, not just in .py/.js."""
+    _git_repo(
+        tmp_path,
+        {
+            "Dockerfile": "FROM python:3.12\n",
+            "docker-compose.yml": "services:\n  app:\n    environment:\n      BEDD_ENDPOINT: http://bedd:9000\n",
+        },
+    )
+    issue = ReviewIssue(
+        severity="high",
+        file="Dockerfile",
+        line=4,
+        message="Removing `BEDD_ENDPOINT` will break the running container.",
+    )
+
+    report = ClaimVerifier().verify_issues(
+        [issue], repo_root=tmp_path, changed_paths=["Dockerfile"]
+    )
+
+    assert len(report.kept) == 1
+    assert report.suppressed_count == 0
+
+
+def test_removal_claim_ignores_the_changed_file_itself(tmp_path: Path):
+    """The removal site still mentions the name in its own diff context."""
+    _git_repo(
+        tmp_path,
+        {
+            "Dockerfile": "FROM rust:1.79 AS bedd-builder\nRUN cargo build --bin bedd\n",
+            "app/main.py": "def run():\n    return 'ok'\n",
+        },
+    )
+    issue = ReviewIssue(
+        severity="high",
+        file="Dockerfile",
+        line=1,
+        message="Deleting the `bedd` stage will cause the container to fail at runtime.",
+    )
+
+    report = ClaimVerifier().verify_issues(
+        [issue], repo_root=tmp_path, changed_paths=["Dockerfile"]
+    )
+
+    assert report.kept == []
+    assert report.suppressed_count == 1
+
+
+def test_removal_claim_kept_when_repo_is_not_a_git_checkout(tmp_path: Path):
+    """No search, no disproof — unknown never suppresses."""
+    (tmp_path / "Dockerfile").write_text("FROM python:3.12\n")
+    issue = ReviewIssue(
+        severity="high",
+        file="Dockerfile",
+        line=1,
+        message="Removing the `bedd` binary will break the runtime.",
+    )
+
+    report = ClaimVerifier().verify_issues([issue], repo_root=tmp_path)
+
+    assert len(report.kept) == 1
+    assert report.suppressed_count == 0

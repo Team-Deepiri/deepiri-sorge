@@ -139,3 +139,29 @@ def test_file_ledger_attach_comment(tmp_path: Path):
     assert ledger.attach_comment("org/r", 9, 4242) == 1
     claimed = ledger.claim(limit=1)
     assert claimed[0].comment_id == 4242
+
+
+def test_multiplex_prompt_frames_groq_issues_as_unconfirmed():
+    """Gemini must be asked to confirm or refute, not to elaborate.
+
+    The old wording ("produce a deeper review") let a Groq hypothesis arrive as
+    settled fact, so Gemini answered "audit harder" instead of checking it.
+    """
+    ticket = EscalateTicket(
+        ticket_id=new_ticket_id(),
+        reason="complexity",
+        files=["prisma/schema.prisma"],
+        estimated_tokens=400,
+        complexity=0.29,
+        priority=60,
+        groq_summary="schema drop",
+        groq_score=5.0,
+        groq_issues=[{"severity": "high", "message": "if anything still calls this, production dies"}],
+        contested_diff="-model Embedding {}",
+    )
+
+    prompt = build_multiplex_prompt([ticket])
+
+    lowered = prompt.lower()
+    assert "unconfirmed" in lowered
+    assert "confirm or refute" in lowered

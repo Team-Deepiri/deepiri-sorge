@@ -198,3 +198,60 @@ def test_weaver_drops_cpp_keywords_as_anchors(tmp_path: Path):
 
     for keyword in ("const", "constexpr", "static", "inline", "template", "typename", "noexcept"):
         assert keyword not in pack.anchors, f"{keyword} should be a stopword"
+
+
+def test_weaver_anchors_deletion_only_diff(tmp_path: Path):
+    """A PR that only deletes lines must still produce anchors.
+
+    Regression for the Bedd-unwire batch: Dockerfile-only removals yielded zero
+    anchors, so `weave` bailed with an empty pack and the model reviewed the
+    removal with no repository evidence behind it.
+    """
+    _write_repo(tmp_path)
+    (tmp_path / "bot" / "spawner.py").write_text(
+        "def spawn_bedd_worker(env):\n    return env\n"
+    )
+
+    diff = DiffParser().parse(
+        """diff --git a/Dockerfile b/Dockerfile
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -12,6 +12,0 @@ RUN cargo build --release
+-FROM rust:1.79 AS bedd-builder
+-WORKDIR /bedd
+-COPY cyrex-agi/bedd ./bedd
+-RUN cargo build --release --bin bedd
+-COPY --from=bedd-builder /bedd/target/release/bedd /usr/local/bin/bedd
+"""
+    )
+
+    pack = RepoContextWeaver(
+        RepoContextConfig(enabled=True, max_snippets=5, max_scan_files=50)
+    ).weave(tmp_path, diff)
+
+    assert pack.anchors, "deletion-only diff produced no anchors"
+    assert "bedd" in " ".join(pack.anchors)
+
+
+def test_weaver_anchors_removed_python_symbols(tmp_path: Path):
+    """Removed defs/classes/imports are anchors, exactly like added ones."""
+    _write_repo(tmp_path)
+
+    diff = DiffParser().parse(
+        """diff --git a/bot/feature.py b/bot/feature.py
+--- a/bot/feature.py
++++ b/bot/feature.py
+@@ -1,4 +1,0 @@
+-from bot.utils.cache import get_cached_review
+-class EmbeddingWriter:
+-    def flush_embeddings(self):
+-        pass
+"""
+    )
+
+    pack = RepoContextWeaver(
+        RepoContextConfig(enabled=True, max_snippets=5, max_scan_files=50)
+    ).weave(tmp_path, diff)
+
+    assert "embeddingwriter" in pack.anchors
+    assert "flush_embeddings" in pack.anchors

@@ -66,6 +66,13 @@ def build_multiplex_prompt(tickets: list[EscalateTicket]) -> str:
         '"recommendations":["..."]}]}',
         "One entry per ticket_id. Be concrete; do not invent files not in the hunks.",
         "",
+        "groq_issues are UNCONFIRMED claims from a smaller model working from "
+        "the hunks alone, not established findings. Confirm or refute each one "
+        "against the diff before repeating it: drop any claim the hunks do not "
+        "support, and do not restate a claim as fact merely because it is "
+        "listed. A claim that something 'may still be referenced somewhere' is "
+        "not evidence — omit it unless the hunks show the reference.",
+        "",
     ]
     for t in tickets:
         parts.append(f"=== TICKET {t.ticket_id} reason={t.reason} ===")
